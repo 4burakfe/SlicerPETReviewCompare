@@ -24,6 +24,7 @@ set(MODULE_PYTHON_SCRIPTS
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
   Resources/Icons/fusbanner.jpg
+  Resources/Icons/Toolbar/color_legend.png
   Resources/Icons/Toolbar/go.png
   Resources/Icons/Toolbar/layout_axial_four_up.png
   Resources/Icons/Toolbar/layout_compare_axial_coronal.png
@@ -57,6 +58,11 @@ set(MODULE_PYTHON_RESOURCES
   Resources/Icons/Toolbar/preset_suv_5.png
   Resources/Icons/Toolbar/preset_suv_7.png
   Resources/Icons/Toolbar/toolbar_hide.png
+  Resources/ColorMaps/Hel.csv
+  Resources/ColorMaps/Jotun.csv
+  Resources/ColorMaps/TruGold.csv
+  Resources/ColorMaps/Valhalla.csv
+  Resources/ColorMaps/Vanaheim.csv
   Resources/UI/${MODULE_NAME}.ui
   )
 

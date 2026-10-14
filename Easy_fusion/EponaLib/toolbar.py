@@ -164,6 +164,7 @@ class EponaToolBar:
         self._colorButtons = []        # (QToolButton, color name, rgb function or None)
         self._colorIconsReady = False
         self._rotationButton = None
+        self._legendButton = None
         self._panelButton = None
         self._panelHiddenByToolbar = False
 
@@ -294,6 +295,23 @@ class EponaToolBar:
                                 GLYPH_ICON_SIZE, checkable=True)
         self._rotationButton = button
         return button
+
+    def addLegendButton(self, callback):
+        """Show / hide the color legend of the fusion views: callback(shown). Kept in sync with setLegendShown."""
+        button = self.addButton("color_legend", "Hide the color legend",
+                                lambda: callback(self._legendButton.checked), GLYPH_ICON_SIZE, checkable=True)
+        self._legendButton = button
+        return button
+
+    def setLegendShown(self, shown):
+        button = self._legendButton
+        if button is None:
+            return
+        wasBlocked = button.blockSignals(True)
+        button.checked = bool(shown)
+        button.blockSignals(wasBlocked)
+        button.setToolTip(richToolTip("Hide the color legend" if shown else "Show the color legend",
+                                      "Color bar of the SPECT/PET color map in the fusion views"))
 
     def addTextButton(self, text, toolTip, callback, group=None):
         """Small button showing a letter or two (e.g. the MIP quick views A / L / R)."""

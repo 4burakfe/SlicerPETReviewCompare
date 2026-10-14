@@ -1,6 +1,11 @@
 """Display helpers: window / level kept in sync between volumes, slice views kept at the same position, Hot Iron
-color stops, color table lookup."""
+color stops, Epona's own color tables (Resources/ColorMaps), color table lookup, color legends of the fusion views."""
 
+import csv
+import os
+import re
+
+import qt
 import slicer
 import vtk
 
@@ -298,6 +303,83 @@ def hotIronRGB(t):
     return (min(max(r, 0.0), 1.0), min(max(g, 0.0), 1.0), min(max(b, 0.0), 1.0))
 
 
+# Epona's own color maps: 256 "r,g,b" rows (0..1) in Resources/ColorMaps/<name>.csv next to the EponaLib folder
+# (source tree: Easy_fusion/Resources, installed extension: the Resources folder of the scripted modules)
+CUSTOM_COLOR_MAP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Resources",
+                                    "ColorMaps")
+CUSTOM_COLOR_MAPS = ("Hel", "Vanaheim", "Jotun", "TruGold", "Valhalla")
+# Color maps left off the module toolbars to keep them narrow (still in the panels)
+TOOLBAR_HIDDEN_COLOR_MAPS = ("Red", "Vanaheim", "Jotun", "Valhalla")
+_customColorCache = {}
+
+
+def customColorTable(name):
+    """The (r, g, b) rows of one of Epona's own color maps (read once), or None if its file is missing or broken."""
+    if name not in _customColorCache:
+        rows = None
+        try:
+            with open(os.path.join(CUSTOM_COLOR_MAP_DIR, name + ".csv"), newline="") as file:
+                rows = [tuple(min(max(float(value), 0.0), 1.0) for value in row[:3])
+                        for row in csv.reader(file) if len(row) >= 3]
+        except (OSError, ValueError):
+            rows = None
+        _customColorCache[name] = rows or None
+    return _customColorCache[name]
+
+
+def customColorRGB(name):
+    """rgbAt(t) for t in [0, 1] of one of Epona's own color maps (for the toolbar swatch), or None."""
+    rows = customColorTable(name)
+    if not rows:
+        return None
+
+    def rgbAt(t):
+        return rows[int(round(min(max(t, 0.0), 1.0) * (len(rows) - 1)))]
+    return rgbAt
+
+
+def fillColorTable(colorNode, rows):
+    """Write (r, g, b) rows into a color table node (idempotent: also repairs a table that came back broken)."""
+    wasModifying = colorNode.StartModify()
+    try:
+        colorNode.SetTypeToUser()
+        colorNode.SetNumberOfColors(len(rows))
+        # Only Slicer versions without SetColorDefined (before 5.4) need SetNamesInitialised (see fillHotIronTable)
+        if not hasattr(colorNode, "SetColorDefined") and hasattr(colorNode, "SetNamesInitialised"):
+            colorNode.SetNamesInitialised(True)
+        for i, (r, g, b) in enumerate(rows):
+            colorNode.SetColor(i, f"Color{i}", r, g, b, 1.0)
+        colorNode.GetLookupTable().SetTableRange(0, len(rows) - 1)
+    finally:
+        colorNode.EndModify(wasModifying)
+
+
+def customColorNode(name):
+    """The color table node of one of Epona's own color maps, created (and refilled) from its file; None if missing."""
+    rows = customColorTable(name)
+    if not rows:
+        return None
+    colorNode = next((node for node in slicer.util.getNodesByClass("vtkMRMLColorTableNode")
+                      if node.GetName() == name), None)
+    if colorNode is None:
+        colorNode = slicer.vtkMRMLColorTableNode()
+        colorNode.SetName(name)
+        fillColorTable(colorNode, rows)
+        slicer.mrmlScene.AddNode(colorNode)
+    else:
+        fillColorTable(colorNode, rows)
+    return colorNode
+
+
+def repairCustomColorNodes():
+    """After a scene load: refill Epona's own color tables (also copies renamed on import, e.g. "Hel_1")."""
+    for node in slicer.util.getNodesByClass("vtkMRMLColorTableNode"):
+        match = re.match(r"^(.+?)([_ ]\d+)?$", node.GetName() or "")
+        rows = customColorTable(match.group(1)) if match and match.group(1) in CUSTOM_COLOR_MAPS else None
+        if rows:
+            fillColorTable(node, rows)
+
+
 def findColorNode(name):
     """
     The color table (or other color node) with this name, e.g. "Red", "Inferno", "PET-Rainbow2"; None if there is
@@ -307,3 +389,78 @@ def findColorNode(name):
         if node.GetName() == name:
             return node
     return None
+
+
+# Color legends: Slicer's color legend display node of the PET, shown only in the fusion views. It draws the PET's
+# color map over its window range, and follows both by itself (color map buttons, presets, window / level drags).
+COLOR_LEGEND_OWNER_ATTRIBUTE = "Epona.ColorLegendOwner"   # "Epona", "Compare1", "Compare2": one legend per owner
+SETTINGS_SHOW_COLOR_LEGEND = "Epona/ShowColorLegend"       # shared by both modules (default on)
+
+
+def colorLegendsEnabled():
+    return str(qt.QSettings().value(SETTINGS_SHOW_COLOR_LEGEND, "true")).lower() in ("true", "1")
+
+
+def setColorLegendsEnabled(enabled):
+    qt.QSettings().setValue(SETTINGS_SHOW_COLOR_LEGEND, "true" if enabled else "false")
+
+
+def sliceNodeIDs(viewNames):
+    """IDs of the slice nodes of these views; views not created yet get the ID Slicer will give them."""
+    ids = []
+    for name in viewNames:
+        node = slicer.mrmlScene.GetSingletonNode(name, "vtkMRMLSliceNode")
+        ids.append(node.GetID() if node is not None else f"vtkMRMLSliceNode{name}")
+    return ids
+
+
+def colorLegendNumberFormat(upper):
+    """Legend label format: one decimal for SUV-like ranges, whole numbers for Bq/mL or counts."""
+    return "%.1f" if upper is None or abs(upper) < 100 else "%.0f"
+
+
+def showColorLegend(owner, volumeNode, viewNodeIDs, title=""):
+    """
+    The owner's color legend of volumeNode, in viewNodeIDs only. A legend of this owner on another volume is removed,
+    and so is this one when volumeNode is None or legends are turned off. Returns the legend node or None.
+    """
+    if not hasattr(slicer, "vtkMRMLColorLegendDisplayNode"):  # Slicer before 5.0
+        return None
+    displayNode = volumeNode.GetDisplayNode() if volumeNode is not None else None
+    wanted = displayNode is not None and bool(viewNodeIDs) and colorLegendsEnabled()
+    legend = None
+    for node in slicer.util.getNodesByClass("vtkMRMLColorLegendDisplayNode"):
+        if node.GetAttribute(COLOR_LEGEND_OWNER_ATTRIBUTE) != owner:
+            continue
+        primary = node.GetPrimaryDisplayNode()
+        if wanted and legend is None and primary is not None and primary.GetID() == displayNode.GetID():
+            legend = node
+        else:
+            slicer.mrmlScene.RemoveNode(node)
+    if not wanted:
+        return None
+    if legend is None:
+        legend = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLColorLegendDisplayNode",
+                                                    f"{volumeNode.GetName()} color legend")
+        legend.SetAttribute(COLOR_LEGEND_OWNER_ATTRIBUTE, owner)
+        volumeNode.AddAndObserveDisplayNodeID(legend.GetID())
+        legend.SetAndObservePrimaryDisplayNode(displayNode)
+    wasModifying = legend.StartModify()
+    try:
+        upper = displayNode.GetWindowLevelMax() if hasattr(displayNode, "GetWindowLevelMax") else None
+        # Looks only: a setter missing from this Slicer version is skipped
+        for setterName, args in (("SetOrientation", (1,)),            # vertical
+                                 ("SetUseColorNamesForLabels", (False,)),  # Epona's tables name colors "Color0", ...
+                                 ("SetSize", (0.08, 0.4)),
+                                 ("SetLabelFormat", (colorLegendNumberFormat(upper),)),
+                                 ("SetTitleText", (title or "",))):
+            setter = getattr(legend, setterName, None)
+            if setter is not None:
+                setter(*args)
+        legend.RemoveAllViewNodeIDs()
+        for viewNodeID in viewNodeIDs:
+            legend.AddViewNodeID(viewNodeID)
+        legend.SetVisibility(True)
+    finally:
+        legend.EndModify(wasModifying)
+    return legend

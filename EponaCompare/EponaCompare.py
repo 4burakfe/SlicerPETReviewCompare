@@ -24,7 +24,10 @@ from EponaLib.layouts import (  # noqa: E402
     REGISTRATION_VIEWS, registerLayout, registrationLayoutDescription,
 )
 from EponaLib import compareviews as views  # noqa: E402
-from EponaLib.display import SliceGeometrySync, WindowLevelLink  # noqa: E402
+from EponaLib.display import (  # noqa: E402
+    colorLegendsEnabled, setColorLegendsEnabled, showColorLegend, SliceGeometrySync, sliceNodeIDs,
+    TOOLBAR_HIDDEN_COLOR_MAPS, WindowLevelLink,
+)
 from EponaLib.overlays import MipRoiOverlay, SliceWindowInfoOverlay  # noqa: E402
 from EponaLib.roi import (  # noqa: E402
     DEFAULT_ABSOLUTE_THRESHOLD, DEFAULT_RELATIVE_THRESHOLD, DEFAULT_ROI_RADIUS_MM,
@@ -39,7 +42,7 @@ from EponaLib.toolbar import (  # noqa: E402
     CT_PRESET_ICONS, EponaToolBar, isToolbarEnabled, LAYOUT_ICONS, PERCENT_PRESET_ICONS, richToolTip,
     SELECTOR_MIN_CONTENTS, SUV_PRESET_ICONS,
 )
-from EponaLib.display import hotIronRGB  # noqa: E402
+from EponaLib.display import customColorRGB, hotIronRGB  # noqa: E402
 from EponaLib.registration import (  # noqa: E402
     REGISTRATION_CENTER_ATTRIBUTE, REGISTRATION_SHIFT_ATTRIBUTE, REGISTRATION_TRANSFORM_ATTRIBUTE,
     attachUnderTransform, formatShift, hasRotation, logRegistration, parseShift, registerTimePoints,
@@ -81,9 +84,11 @@ PARAM_ABSOLUTE_THRESHOLD = "AbsoluteThreshold"
 TIME_POINTS = (1, 2)
 PET_ROLES = {1: ROLE_TP1_PET, 2: ROLE_TP2_PET}
 CT_ROLES = {1: ROLE_TP1_CT, 2: ROLE_TP2_CT}
-# (button text, color node name): same color maps as Epona
+# (button text, color node name): same color maps as Epona, three per row in the panel
 PET_COLOR_MAPS = [("Hot Iron", views.HOT_IRON_NAME), ("Inferno", "Inferno"), ("Rainbow-2", "PET-Rainbow2"),
-                  ("PET-DICOM", "PET-DICOM"), ("Red", "Red"), ("Hot Metal Blue", "PET-HotMetalBlue")]
+                  ("PET-DICOM", "PET-DICOM"), ("Red", "Red"), ("Hot Metal Blue", "PET-HotMetalBlue"),
+                  ("Hel", "Hel"), ("Vanaheim", "Vanaheim"), ("Jotun", "Jotun"),
+                  ("TruGold", "TruGold"), ("Valhalla", "Valhalla")]
 DEFAULT_CT_WINDOW = (400.0, 40.0)              # abdomen
 COMPARE_DUAL_MONITOR_FIT_DELAY_MS = 900         # second fit of the views after the Monitor 2 window is placed
 COMPARE_LAYOUT_BUTTONS = [
@@ -754,10 +759,9 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.layoutButtons[layoutID] = layoutButton
         form.addRow("Layout:", grid)
 
-        form.addRow("PET color map:", self._buttonRow(
-            [(text, lambda name=name: self.onColorMap(name)) for text, name in PET_COLOR_MAPS[:3]]))
-        form.addRow("", self._buttonRow(
-            [(text, lambda name=name: self.onColorMap(name)) for text, name in PET_COLOR_MAPS[3:]]))
+        for start in range(0, len(PET_COLOR_MAPS), 3):
+            form.addRow("PET color map:" if start == 0 else "", self._buttonRow(
+                [(text, lambda name=name: self.onColorMap(name)) for text, name in PET_COLOR_MAPS[start:start + 3]]))
         form.addRow("CT presets:", self._buttonRow(
             [(text.replace("CT: ", ""), lambda window=window, level=level: self.onCtPreset(window, level),
               f"Both time points. Shortcut: {key} with the mouse over a compare CT view")
@@ -798,6 +802,12 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.windowInfoCheckBox.setToolTip("Bottom-right corner of each compare view: time point (imaging date), "
                                            "CT/MRI window and SPECT/PET range.")
         form.addRow(self.windowInfoCheckBox)
+        self.colorLegendCheckBox = qt.QCheckBox("Color legend in the fusion views")
+        self.colorLegendCheckBox.checked = colorLegendsEnabled()
+        self.colorLegendCheckBox.setToolTip("A color bar of each time point's SPECT/PET color map with its window "
+                                            "range, in that time point's fusion views.\nIt follows the color map "
+                                            "buttons, presets and window / level changes. Shared with Epona.")
+        form.addRow(self.colorLegendCheckBox)
 
         self.windowInfoOverlay = SliceWindowInfoOverlay(self.readingVolumes, viewFilter=isCompareView,
                                                         headerCallback=self.viewHeader)
@@ -809,6 +819,7 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.rotationButton.connect("toggled(bool)", self.onRotationToggled)
         self.rotationSpeedSlider.connect("valueChanged(double)", self.onRotationSpeedChanged)
         self.windowInfoCheckBox.connect("toggled(bool)", self.windowInfoOverlay.setEnabled)
+        self.colorLegendCheckBox.connect("toggled(bool)", self.onColorLegendToggled)
 
     # --- toolbar (top of the window while the module is open) -----------------------------------------------
 
@@ -854,9 +865,12 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         toolbar.addSeparator()
         for text, name in PET_COLOR_MAPS:
+            if name in TOOLBAR_HIDDEN_COLOR_MAPS:
+                continue
             toolbar.addColorButton(name, richToolTip(text, "SPECT/PET color map, both time points"),
                                    lambda name=name: self.onColorMap(name),
-                                   rgbFunction=hotIronRGB if name == views.HOT_IRON_NAME else None)
+                                   rgbFunction=hotIronRGB if name == views.HOT_IRON_NAME else customColorRGB(name))
+        toolbar.addLegendButton(self.setColorLegendShown)
 
         toolbar.addSeparator()
         toolbar.addLayoutButtons([(layoutID, LAYOUT_ICONS[layoutID], richToolTip(text, tip))
@@ -925,6 +939,7 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if self.toolbar is None:
             return
         self.syncToolbarSelectors(refresh=True)
+        self.toolbar.setLegendShown(colorLegendsEnabled())
         self.toolbar.setCurrentLayout(views.currentLayout())
         self.toolbar.setRotating(any(viewNode.GetAnimationMode() != 0 for viewNode, _ in self._observedMipViews))
 
@@ -1032,6 +1047,22 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.refreshReading(fit=True)
         if layoutID in COMPARE_DUAL_MONITOR_LAYOUT_IDS:
             views.schedulePlaceMonitor2Window()
+
+    def setColorLegendShown(self, shown):
+        """Toolbar button: same as the panel checkbox (which updates the legends and the button)."""
+        if self.colorLegendCheckBox.checked != bool(shown):
+            self.colorLegendCheckBox.checked = bool(shown)
+        else:
+            self.onColorLegendToggled(bool(shown))
+
+    def onColorLegendToggled(self, checked):
+        setColorLegendsEnabled(checked)
+        if self.toolbar is not None:
+            self.toolbar.setLegendShown(checked)
+        timePoints = self.timePoints()
+        if not (self.logic.isAccepted() and self.logic.timePointsComplete()):
+            timePoints = {}   # nothing on screen yet: only remove legends left from before
+        self.logic.updateColorLegends(timePoints)
 
     def refreshReading(self, fit=False):
         """Fill the compare views, links, MIPs and ROI views (after Accept, a layout change or new volumes)."""
@@ -1928,7 +1959,20 @@ class EponaCompareLogic(ScriptedLoadableModuleLogic):
                 views.showMip(timePoint, pet, lower, upper)
         views.isolateMipViews()
         _geometrySync.setGroups(views.geometryGroups())
+        self.updateColorLegends(timePoints)
         return twins
+
+    @staticmethod
+    def updateColorLegends(timePoints):
+        """Color legend of each time point's PET in its own fusion views (follows color map and window by itself)."""
+        for timePoint in TIME_POINTS:
+            pet = timePoints.get(timePoint, (None, None))[0]
+            try:
+                title = valueKindUnit(petValueInfo(pet).kind) if pet is not None else ""
+                viewNames = [views.compareViewName(timePoint, key) for key in ("AxFus", "CorFus")]
+                showColorLegend(f"Compare{timePoint}", pet, sliceNodeIDs(viewNames), title)
+            except Exception:
+                logging.debug("EponaCompare: could not show the color legend", exc_info=True)
 
     def fitViews(self):
         """Fit the time point 2 fusion views, give every view of the same orientation that geometry, fit the MIPs."""

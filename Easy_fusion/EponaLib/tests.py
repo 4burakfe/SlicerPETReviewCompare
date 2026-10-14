@@ -681,6 +681,13 @@ class ToolbarTest(unittest.TestCase):
         self.assertEqual(rotations, [True])
         bar.setRotating(False)
         self.assertFalse(bar._rotationButton.checked)
+        legendStates = []
+        bar.addLegendButton(legendStates.append)
+        bar.setLegendShown(True)
+        bar._legendButton.click()                       # shown -> hide
+        self.assertEqual(legendStates, [False])
+        bar.setLegendShown(True)
+        self.assertTrue(bar._legendButton.checked)
 
     def test_every_preset_and_layout_has_an_icon(self):
         import os
@@ -689,7 +696,7 @@ class ToolbarTest(unittest.TestCase):
                  + [toolbar.PERCENT_PRESET_ICONS[p] for p in values.SPECT_PERCENT_OF_MAX_PRESETS]
                  + [toolbar.MRI_PRESET_ICONS[text] for text, *_ in values.MRI_PERCENTILE_PRESETS]
                  + [toolbar.LAYOUT_ICONS[i] for i in layouts.EASYFUSION_LAYOUT_IDS + layouts.COMPARE_LAYOUT_IDS]
-                 + ["go", "panel_hide", "panel_show", "mip_rotate", "toolbar_hide"])
+                 + ["go", "panel_hide", "panel_show", "mip_rotate", "toolbar_hide", "color_legend"])
         for name in names:
             self.assertTrue(os.path.exists(toolbar.iconPath(name)), name)
 
@@ -746,6 +753,186 @@ class ToolbarTest(unittest.TestCase):
 
     def test_tooltip(self):
         self.assertEqual(toolbar.richToolTip("A<B", "x\ny"), "<b>A&lt;B</b><br>x<br>y")
+
+
+class _FakeLegend:
+    def __init__(self, name):
+        self.name, self.attributes, self.views, self.primary = name, {}, [], None
+        self.visible, self.title, self.format = False, None, None
+
+    def GetAttribute(self, key):
+        return self.attributes.get(key)
+
+    def SetAttribute(self, key, value):
+        self.attributes[key] = value
+
+    def GetPrimaryDisplayNode(self):
+        return self.primary
+
+    def SetAndObservePrimaryDisplayNode(self, node):
+        self.primary = node
+
+    def GetID(self):
+        return "legend-" + self.name
+
+    def StartModify(self):
+        return 0
+
+    def EndModify(self, previous):
+        pass
+
+    def SetOrientation(self, orientation):
+        pass
+
+    def SetUseColorNamesForLabels(self, flag):
+        pass
+
+    def SetSize(self, width, height):
+        pass
+
+    def SetLabelFormat(self, text):
+        self.format = text
+
+    def SetTitleText(self, text):
+        self.title = text
+
+    def RemoveAllViewNodeIDs(self):
+        self.views = []
+
+    def AddViewNodeID(self, viewID):
+        self.views.append(viewID)
+
+    def SetVisibility(self, flag):
+        self.visible = bool(flag)
+
+
+class _FakeLegendScene:
+    def __init__(self):
+        self.legends = []
+
+    def AddNewNodeByClass(self, className, name):
+        legend = _FakeLegend(name)
+        self.legends.append(legend)
+        return legend
+
+    def RemoveNode(self, node):
+        self.legends.remove(node)
+
+    def GetSingletonNode(self, name, className):
+        return None
+
+
+class _FakeDisplayable:
+    def __init__(self, name, upper=10.0):
+        display = mock.MagicMock()
+        display.GetID.return_value = name + "-display"
+        display.GetWindowLevelMax.return_value = upper
+        self.display, self.name, self.legendIDs = display, name, []
+
+    def GetDisplayNode(self):
+        return self.display
+
+    def GetName(self):
+        return self.name
+
+    def AddAndObserveDisplayNodeID(self, nodeID):
+        self.legendIDs.append(nodeID)
+
+
+@unittest.skipIf("mock" not in globals(), "uses stand-ins for the scene (outside Slicer only)")
+class ColorLegendTest(unittest.TestCase):
+
+    def setUp(self):
+        self.scene = _FakeLegendScene()
+        fakeSlicer = mock.MagicMock()
+        fakeSlicer.mrmlScene = self.scene
+        fakeSlicer.util.getNodesByClass.side_effect = lambda className: list(self.scene.legends)
+        patches = [mock.patch.object(display, "slicer", fakeSlicer),
+                   mock.patch.object(display, "colorLegendsEnabled", lambda: self.enabled)]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.enabled = True
+
+    def test_one_legend_per_owner_in_the_given_views(self):
+        pet = _FakeDisplayable("PET")
+        legend = display.showColorLegend("Epona", pet, display.sliceNodeIDs(["Red", "Green"]), "SUV")
+        self.assertEqual(legend.views, ["vtkMRMLSliceNodeRed", "vtkMRMLSliceNodeGreen"])
+        self.assertEqual((legend.title, legend.format, legend.visible), ("SUV", "%.1f", True))
+        self.assertEqual(pet.legendIDs, [legend.GetID()])
+        # Same PET again: the same legend is kept
+        self.assertIs(display.showColorLegend("Epona", pet, ["vtkMRMLSliceNodeRed"]), legend)
+        self.assertEqual(len(self.scene.legends), 1)
+        # Another owner gets its own legend; a new PET replaces the owner's old one
+        display.showColorLegend("Compare1", pet, ["a"])
+        other = display.showColorLegend("Epona", _FakeDisplayable("PET2", upper=20000.0), ["b"])
+        self.assertEqual(len(self.scene.legends), 2)
+        self.assertIn(other, self.scene.legends)
+        self.assertNotIn(legend, self.scene.legends)
+        self.assertEqual(other.format, "%.0f")
+
+    def test_removed_when_turned_off_or_no_volume(self):
+        pet = _FakeDisplayable("PET")
+        display.showColorLegend("Epona", pet, ["v"])
+        self.enabled = False
+        self.assertIsNone(display.showColorLegend("Epona", pet, ["v"]))
+        self.assertEqual(self.scene.legends, [])
+        self.enabled = True
+        display.showColorLegend("Epona", pet, ["v"])
+        self.assertIsNone(display.showColorLegend("Epona", None, ["v"]))
+        self.assertEqual(self.scene.legends, [])
+
+
+class CustomColorMapTest(unittest.TestCase):
+
+    def test_every_custom_map_has_a_full_table(self):
+        for name in display.CUSTOM_COLOR_MAPS:
+            rows = display.customColorTable(name)
+            self.assertEqual(len(rows), 256, name)
+            self.assertTrue(all(len(row) == 3 and all(0.0 <= value <= 1.0 for value in row) for row in rows), name)
+            rgbAt = display.customColorRGB(name)
+            self.assertEqual(tuple(rgbAt(0.0)), rows[0])
+            self.assertEqual(tuple(rgbAt(1.0)), rows[-1])
+        self.assertIsNone(display.customColorTable("NoSuchMap"))
+        self.assertIsNone(display.customColorRGB("NoSuchMap"))
+
+    def test_fill_color_table(self):
+        class Table:
+            def __init__(self):
+                self.colors, self.range = {}, None
+                lookupTable = self
+
+                class _Lut:
+                    def SetTableRange(self, low, high):
+                        lookupTable.range = (low, high)
+                self.lut = _Lut()
+
+            def StartModify(self):
+                return 0
+
+            def EndModify(self, previous):
+                pass
+
+            def SetTypeToUser(self):
+                pass
+
+            def SetNumberOfColors(self, count):
+                self.count = count
+
+            def SetColorDefined(self, *args):
+                pass
+
+            def SetColor(self, index, name, r, g, b, a):
+                self.colors[index] = (r, g, b, a)
+
+            def GetLookupTable(self):
+                return self.lut
+
+        table = Table()
+        display.fillColorTable(table, [(0.0, 0.0, 0.0), (0.5, 0.25, 1.0)])
+        self.assertEqual(table.count, 2)
+        self.assertEqual(table.colors[1], (0.5, 0.25, 1.0, 1.0))
+        self.assertEqual(table.range, (0, 1))
 
 
 class ImageKindLabelTest(unittest.TestCase):

@@ -35,7 +35,8 @@ A reading environment for SPECT/PET with CT/MRI: fusion, MIP, reading layouts, w
 #### Fusion and MIP
 - Select the SPECT/PET and CT/MRI volumes, choose a color map and click **Go** to set up fusion and the 3D MIP. If the current layout is not one of Epona's, **Go** switches to **CT | Fusion | PET + 3D**. After the first **Go**, changing either volume updates the views immediately.
 - MIP rotation with adjustable speed, and quick views (Anterior, Left, Right). Rotation no longer starts on its own after loading a scene.
-- PET color maps: Hot Iron, Inferno, Rainbow-2, PET-DICOM, Red, Hot Metal Blue.
+- PET color maps: Hot Iron, Inferno, Rainbow-2, PET-DICOM, Red, Hot Metal Blue, and Epona's own Hel, Vanaheim, Jotun, TruGold and Valhalla (256-color tables in `Easy_fusion/Resources/ColorMaps`, one `r,g,b` row per color).
+- **Color legend**: a color bar of the PET color map and its window range at the side of the fusion views. It changes with the color map buttons, presets and window / level drags. Turn it off with the legend button on the toolbar or **Color legend in the fusion views** (Layouts section; in Compare, the Reading section, where each time point has its own legend in its own fusion views). The setting is shared by both modules.
 
 #### Windowing presets and keyboard shortcuts
 - **CT**: Abdomen, Head, Lungs, Bones
@@ -75,7 +76,7 @@ The volume selector labels follow what is selected: **PET** or **SPECT** (from D
 While the module is open, a row of small picture buttons appears at the top of the window (and disappears when you go to another module):
 - copies of the volume selectors (choosing there is the same as in the panel; labelled PET / SPECT and CT / MRI as detected) and **Go**,
 - **window presets** as pictures of what they look like: CT (abdomen, head, lungs, bones) or MRI presets, and SUV (0–5 … 0–25) or % of maximum presets — only the ones that fit the selected volumes are shown,
-- **color maps** as color bars, **layouts** as small pictures of the views (the name shows when you hover),
+- **color maps** as color bars (all but Red, Vanaheim, Jotun and Valhalla, which stay in the panel), a **color legend** show / hide button, **layouts** as small pictures of the views (the name shows when you hover),
 - **MIP rotation** on / off and quick views **A** (anterior), **L** (left), **R** (right),
 - **hide the module panel** (it always comes back when you leave the module) and **hide the toolbar** (bring it back with the **Show Toolbar** button under Go; the setting is shared with Compare).
 

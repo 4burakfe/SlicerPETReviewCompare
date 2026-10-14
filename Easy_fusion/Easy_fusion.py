@@ -46,7 +46,9 @@ from EponaLib.values import (  # noqa: F401
     windowPresetForView, anatomicalLabel, functionalLabel,
 )
 from EponaLib.display import (  # noqa: F401
-    bindWindowLevelSync, fillHotIronTable, findColorNode, hotIronRGB, SliceGeometrySync, syncSliceViewSize,
+    bindWindowLevelSync, colorLegendsEnabled, CUSTOM_COLOR_MAPS, customColorNode, customColorRGB, fillHotIronTable,
+    findColorNode, hotIronRGB, repairCustomColorNodes, setColorLegendsEnabled, showColorLegend, sliceNodeIDs,
+    SliceGeometrySync, syncSliceViewSize, TOOLBAR_HIDDEN_COLOR_MAPS,
     unbindWindowLevelSync,
 )
 from EponaLib.roi import (  # noqa: F401
@@ -120,13 +122,19 @@ ROI_SET_ROLE_ATTRIBUTES = {ROLE_POINTS: ROI_NODE_ATTRIBUTE, ROLE_HANDLES: ROI_HA
 # Wait for both selectors before updating the views (e.g. one change of each in a row)
 INPUT_UPDATE_DELAY_MS = 150
 
-# (button text, color node name); PET-DICOM and Hot Metal Blue on the second row
+# (button text, color node name), one list per row. Hel, Vanaheim, Jotun, TruGold and Valhalla are Epona's own
+# tables (Resources/ColorMaps)
 PET_COLOR_MAP_BUTTONS = [
     [("Hot Iron", HOT_IRON_NAME), ("Inferno", "Inferno"), ("Rainbow-2", "PET-Rainbow2")],
     [("PET-DICOM", "PET-DICOM"), ("Red", "Red"), ("Hot Metal Blue", "PET-HotMetalBlue")],
+    [("Hel", "Hel"), ("Vanaheim", "Vanaheim"), ("Jotun", "Jotun")],
+    [("TruGold", "TruGold"), ("Valhalla", "Valhalla")],
 ]
+# Fusion views (CT + PET): the color legend is shown there
+FUSION_VIEW_NAMES = tuple(name for name, (_, content) in SLICE_VIEW_ROLES.items() if content == "fusion")
 # Color map combo box (applied by "Go")
-FUSION_COLOR_MAPS = {"Hot Iron": HOT_IRON_NAME, "Inferno": "Inferno", "Rainbow": "PET-Rainbow2"}
+FUSION_COLOR_MAPS = {"Hot Iron": HOT_IRON_NAME, "Inferno": "Inferno", "Rainbow": "PET-Rainbow2",
+                     **{name: name for name in CUSTOM_COLOR_MAPS}}
 # The 3D view that shows the MIP: the only 3D view of every EasyFusion layout (and of Slicer's four-up)
 MIP_VIEW_TAG = "1"
 MIP_RAYCAST_TECHNIQUE = 2   # vtkMRMLViewNode::MaximumIntensityProjection
@@ -310,6 +318,7 @@ def _afterSceneLoad():
     steps = [logic.clearDanglingViewReferences,
              logic.stopAllViewRotations,
              logic.repairHotIronColorNodes,
+             repairCustomColorNodes,
              logic.switchDualMonitorLayoutIfSingleScreen,
              logic.restoreViewRolesAfterLoad,
              logic.placeSecondaryViewportWindowAfterLoad]
@@ -568,9 +577,13 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         toolbar.addSeparator()
         for row in PET_COLOR_MAP_BUTTONS:
             for text, colorNodeName in row:
+                if colorNodeName in TOOLBAR_HIDDEN_COLOR_MAPS:
+                    continue
                 toolbar.addColorButton(colorNodeName, richToolTip(text, "SPECT/PET color map"),
                                        lambda colorNodeName=colorNodeName: self.setPETColorMap(colorNodeName),
-                                       rgbFunction=hotIronRGB if colorNodeName == HOT_IRON_NAME else None)
+                                       rgbFunction=(hotIronRGB if colorNodeName == HOT_IRON_NAME
+                                                    else customColorRGB(colorNodeName)))
+        toolbar.addLegendButton(self.setColorLegendShown)
 
         # Layouts (pictures; the name shows on hover)
         toolbar.addSeparator()
@@ -621,6 +634,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if self.toolbar is None:
             return
         self.syncToolbarSelectors()
+        self.toolbar.setLegendShown(colorLegendsEnabled())
         layoutManager = slicer.app.layoutManager()
         self.toolbar.setCurrentLayout(layoutManager.layout if layoutManager is not None else None)
         viewNode = self.observedViewNode
@@ -747,6 +761,14 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.syncViewsCheckBox.checked = str(qt.QSettings().value(SETTINGS_SYNC_VIEWS, "true")).lower() in ("true", "1")
         self.syncViewsCheckBox.connect("toggled(bool)", self.onSyncViewsToggled)
         layoutFormLayout.addRow(self.syncViewsCheckBox)
+
+        self.colorLegendCheckBox = qt.QCheckBox("Color legend in the fusion views")
+        self.colorLegendCheckBox.setToolTip(
+            "A color bar of the SPECT/PET color map with its window range, at the side of each fusion view.\n"
+            "It follows the color map buttons, presets and window / level changes. Shared with Epona Compare.")
+        self.colorLegendCheckBox.checked = colorLegendsEnabled()
+        self.colorLegendCheckBox.connect("toggled(bool)", self.onColorLegendToggled)
+        layoutFormLayout.addRow(self.colorLegendCheckBox)
 
         showWindowInfo = str(qt.QSettings().value(SETTINGS_SHOW_WINDOW_INFO, "true")).lower() in ("true", "1")
         self.windowInfoOverlay.enabled = showWindowInfo
@@ -1617,6 +1639,20 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def scheduleViewSyncUpdate(self):
         qt.QTimer.singleShot(VIEW_SYNC_DELAY_MS, self.updateViewSync)
 
+    def setColorLegendShown(self, shown):
+        """Toolbar button: same as the panel checkbox (which updates the legends and the button)."""
+        if self.colorLegendCheckBox.checked != bool(shown):
+            self.colorLegendCheckBox.checked = bool(shown)
+        else:
+            self.onColorLegendToggled(bool(shown))
+
+    def onColorLegendToggled(self, checked):
+        setColorLegendsEnabled(checked)
+        if self.toolbar is not None:
+            self.toolbar.setLegendShown(checked)
+        settingsNode = self.logic.getSettingsNode(create=False)
+        self.logic.updateColorLegend(settingsNode.GetNodeReference(SETTINGS_PET_ROLE) if settingsNode else None)
+
     def onSyncViewsToggled(self, checked):
         qt.QSettings().setValue(SETTINGS_SYNC_VIEWS, "true" if checked else "false")
         self.updateViewSync()
@@ -1862,6 +1898,11 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
         if colorNodeName == HOT_IRON_NAME:
             colorNode = self.logic.getOrCreateHotIronColorNode()
+        elif colorNodeName in CUSTOM_COLOR_MAPS:
+            colorNode = customColorNode(colorNodeName)
+            if colorNode is None:
+                slicer.util.errorDisplay(f"Color map file '{colorNodeName}.csv' is missing from Resources/ColorMaps.")
+                return
         else:
             # Color nodes only: getNode("Red") could also find the Red slice view
             colorNode = findColorNode(colorNodeName)
@@ -3238,6 +3279,16 @@ class Easy_fusionLogic(ScriptedLoadableModuleLogic):
             if wasLinked:
                 for compositeNode in compositeNodes:
                     compositeNode.SetLinkedControl(True)
+            self.updateColorLegend(petNode)
+
+    @staticmethod
+    def updateColorLegend(petNode):
+        """Color legend of the PET in the fusion views (it follows the color map and window by itself)."""
+        try:
+            title = valueKindUnit(petValueInfo(petNode).kind) if petNode is not None else ""
+            showColorLegend("Epona", petNode, sliceNodeIDs(FUSION_VIEW_NAMES), title)
+        except Exception:
+            logging.debug("EasyFusion: could not show the color legend", exc_info=True)
 
     def _assignViewVolumes(self, roleNodes, petNode, ctNode, petOnlyNode, forceOrientation):
         """Orientation and background / foreground volumes of each EasyFusion view (see applyViewRoles)."""

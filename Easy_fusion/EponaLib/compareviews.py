@@ -15,7 +15,7 @@ from .layouts import (
     COMPARE_LAYOUT_IDS, COMPARE_MIP_VIEWS, COMPARE_PET_ONLY_ATTRIBUTE, COMPARE_SLICE_VIEWS, compareViewName,
     hasMultipleScreens, isCompareView, PET_ONLY_SOURCE_ROLE, registerLayout, showOnSecondScreen,
 )
-from .display import fillHotIronTable, findColorNode, syncSliceViewSize
+from .display import CUSTOM_COLOR_MAPS, customColorNode, fillHotIronTable, findColorNode, syncSliceViewSize
 from .roiset import ROI_SET_ATTRIBUTE
 
 HOT_IRON_NAME = "CustomHotIron"               # same color node as Epona (never two of them)
@@ -253,9 +253,12 @@ def hotIronColorNode():
 
 
 def colorNodeByName(name):
-    """Color node for a color map button: Hot Iron (shared with Epona) or one of Slicer's color tables."""
+    """Color node for a color map button: Hot Iron (shared with Epona), one of Epona's own tables (Hel, Vanaheim,
+    ...) or one of Slicer's color tables."""
     if name == HOT_IRON_NAME:
         return hotIronColorNode()
+    if name in CUSTOM_COLOR_MAPS:
+        return customColorNode(name)
     return findColorNode(name)  # by name among color nodes only (the Red slice view is also called "Red")
 
 
