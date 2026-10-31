@@ -15,7 +15,11 @@ from .layouts import (
     COMPARE_LAYOUT_IDS, COMPARE_MIP_VIEWS, COMPARE_PET_ONLY_ATTRIBUTE, COMPARE_SLICE_VIEWS, compareViewName,
     hasMultipleScreens, isCompareView, PET_ONLY_SOURCE_ROLE, registerLayout, showOnSecondScreen,
 )
-from .display import CUSTOM_COLOR_MAPS, customColorNode, fillHotIronTable, findColorNode, syncSliceViewSize
+from .display import (
+    CUSTOM_COLOR_MAPS, customColorNode, fillHotIronTable, findColorNode, mipGreyRange, setMipTransferFunctions,
+    syncSliceViewSize,
+)
+from .measure import isRulerNode
 from .roiset import ROI_SET_ATTRIBUTE
 
 HOT_IRON_NAME = "CustomHotIron"               # same color node as Epona (never two of them)
@@ -317,27 +321,21 @@ def mipDisplayNode(timePoint, petNode, create=False):
 
 
 def setMipRange(vrDisplayNode, lower, upper):
-    """MIP from white at lower to black at upper, every intensity opaque (as Epona's MIP)."""
-    propertyNode = vrDisplayNode.GetVolumePropertyNode() if vrDisplayNode is not None else None
-    if propertyNode is None:
+    """MIP from white at lower to black at upper, every intensity opaque (the same setup as Epona's MIP)."""
+    if vrDisplayNode is not None:
+        setMipTransferFunctions(vrDisplayNode, lower, upper, flatOpacity=True)
+
+
+def refreshMipRange(timePoint, petNode):
+    """Set a time point's MIP range again (as a window preset does): run once the new MIP has been rendered."""
+    if petNode is None or petNode.GetScene() is None:
         return
-    colorFunction = propertyNode.GetVolumeProperty().GetRGBTransferFunction(0)
-    colorFunction.RemoveAllPoints()
-    colorFunction.AddRGBPoint(lower, 1.0, 1.0, 1.0)
-    colorFunction.AddRGBPoint(upper, 0.0, 0.0, 0.0)
-    opacityLower, opacityUpper = lower, upper
-    volumeNode = vrDisplayNode.GetVolumeNode()
-    imageData = volumeNode.GetImageData() if volumeNode is not None else None
-    if imageData is not None and imageData.GetNumberOfPoints() > 0:
-        dataMinimum, dataMaximum = imageData.GetScalarRange()
-        opacityLower, opacityUpper = min(lower, dataMinimum), max(upper, dataMaximum)
-    scalarOpacity = propertyNode.GetScalarOpacity()
-    scalarOpacity.RemoveAllPoints()
-    scalarOpacity.AddPoint(opacityLower, 1.0)
-    if opacityUpper > opacityLower:
-        scalarOpacity.AddPoint(opacityUpper, 1.0)
-    propertyNode.Modified()
-    vrDisplayNode.Modified()
+    vrDisplayNode = mipDisplayNode(timePoint, petNode)
+    greyRange = mipGreyRange(vrDisplayNode) if vrDisplayNode is not None else None
+    if greyRange is None:
+        greyRange = windowRange(petNode)
+    if vrDisplayNode is not None and greyRange is not None:
+        setMipRange(vrDisplayNode, *greyRange)
 
 
 def configureMipView(viewNode):
@@ -388,6 +386,8 @@ def isolateMipViews():
             displayable = displayNode.GetDisplayableNode()
             if displayable is None or displayable.GetHideFromEditors() or displayable.GetAttribute(ROI_SET_ATTRIBUTE):
                 continue  # compare ROI sets choose their own views
+            if isRulerNode(displayable):
+                continue  # ruler lines are drawn in slice views only (3D visibility off), in every layout
             current = [displayNode.GetNthViewNodeID(i) for i in range(displayNode.GetNumberOfViewNodeIDs())]
             if current and not (set(current) & mipIDs):
                 continue

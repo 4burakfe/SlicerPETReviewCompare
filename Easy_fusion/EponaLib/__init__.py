@@ -14,13 +14,14 @@ Modules, lowest first (each imports only from the ones before it):
   filters   AI post-processing filters: model catalog and downloads, inference
   overlays  window info in the slice views, ROI segments and values on the MIP
   registration  time point 1 -> 2 translation (initial alignment + mutual information), transform handling
+  measure   distance ruler (line markups for looking only, never in the ROI tables)
   compareviews  reading views of the compare module: twins, MIPs, view contents, layouts, Monitor 2
   toolbar   the module toolbar (top of the window while a module is open): picture buttons, panel hiding
   tests     unit tests of the pure helpers (run by the module's self test, or: python -m EponaLib.tests)
 """
 
 SUBMODULES = ("scene", "shortcuts", "layouts", "values", "studyinfo", "display", "roi", "roiset", "filters",
-              "overlays", "registration", "compareviews", "toolbar", "tests")
+              "overlays", "registration", "measure", "compareviews", "toolbar", "tests")
 
 
 def reloadAll():

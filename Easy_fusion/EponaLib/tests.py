@@ -42,7 +42,7 @@ except ImportError:  # plain Python: stand-ins so the modules import; only scene
 
 import numpy as np
 
-from . import display, filters, layouts, registration, roi, roiset, shortcuts, studyinfo, toolbar, values
+from . import display, filters, layouts, measure, registration, roi, roiset, shortcuts, studyinfo, toolbar, values
 
 
 def _syntheticVolumes(seed=0):
@@ -696,7 +696,7 @@ class ToolbarTest(unittest.TestCase):
                  + [toolbar.PERCENT_PRESET_ICONS[p] for p in values.SPECT_PERCENT_OF_MAX_PRESETS]
                  + [toolbar.MRI_PRESET_ICONS[text] for text, *_ in values.MRI_PERCENTILE_PRESETS]
                  + [toolbar.LAYOUT_ICONS[i] for i in layouts.EASYFUSION_LAYOUT_IDS + layouts.COMPARE_LAYOUT_IDS]
-                 + ["go", "panel_hide", "panel_show", "mip_rotate", "toolbar_hide", "color_legend"])
+                 + ["go", "panel_hide", "panel_show", "mip_rotate", "toolbar_hide", "color_legend", "ruler"])
         for name in names:
             self.assertTrue(os.path.exists(toolbar.iconPath(name)), name)
 
@@ -712,6 +712,26 @@ class ToolbarTest(unittest.TestCase):
         self.assertTrue(bar.toolBar.isVisible() and bar.isShown())
         bar.setEnabled(False)
         self.assertFalse(bar.isShown())
+
+    def test_ruler_button(self):
+        class Ruler:
+            onPlacingChanged = None
+            calls = []
+
+            def setPlacing(self, placing):
+                self.calls.append(placing)
+                self.onPlacingChanged(placing)
+
+            def deleteAll(self):
+                pass
+
+        ruler = Ruler()
+        button = self.bar.addRulerButton(ruler)
+        button.click()                                   # pressed: start placing
+        self.assertEqual(ruler.calls, [True])
+        self.assertTrue(button.checked)
+        ruler.onPlacingChanged(False)                    # line finished (or Esc): the button pops up
+        self.assertFalse(button.checked)
 
     def test_text_buttons(self):
         views = []
@@ -1106,6 +1126,218 @@ class SecondScreenTest(unittest.TestCase):
         self.assertTrue(layouts.hasAllFlags(7, 5))
         self.assertFalse(layouts.hasAllFlags(4, 5))
         self.assertFalse(layouts.hasAllFlags(None, 5))
+
+
+
+class MipTransferFunctionTest(unittest.TestCase):
+    """MIP color points: white at lower, black at upper, carried out to the data minimum / maximum."""
+
+    def test_window_inside_data(self):
+        points = display.mipColorPoints(0.0, 10.0, (-2.0, 42.0))
+        self.assertEqual(points, [(-2.0, 1.0), (0.0, 1.0), (10.0, 0.0), (42.0, 0.0)])
+        self.assertEqual(display.greyRangeFromPoints(points), (0.0, 10.0))
+
+    def test_no_data_range_or_close_ends(self):
+        self.assertEqual(display.mipColorPoints(0.0, 10.0), [(0.0, 1.0), (10.0, 0.0)])
+        # Data max barely above the window: no extra point (tiny GPU table), clamping keeps it black
+        self.assertEqual(display.mipColorPoints(0.0, 10.0, (0.0, 10.2)), [(0.0, 1.0), (10.0, 0.0)])
+        self.assertEqual(display.mipColorPoints(0.0, 100.0, (0.0, 80.0)), [(0.0, 1.0), (100.0, 0.0)])
+
+    def test_degenerate_window(self):
+        points = display.mipColorPoints(5.0, 5.0, (0.0, 10.0))
+        self.assertEqual((points[0], points[1], points[-1]), ((0.0, 1.0), (5.0, 1.0), (10.0, 0.0)))
+        self.assertTrue(points[2][0] > 5.0 and points[2][1] == 0.0)
+
+    def test_grey_range_of_old_or_foreign_functions(self):
+        self.assertEqual(display.greyRangeFromPoints([(0.0, 1.0), (7.0, 0.0)]), (0.0, 7.0))   # older scenes
+        self.assertIsNone(display.greyRangeFromPoints([(0.0, 0.0), (7.0, 1.0)]))           # not a MIP ramp
+
+    def test_transfer_functions_on_a_fake_property(self):
+        class Function:
+            def __init__(self):
+                self.points, self.clamping = [], 0
+
+            def RemoveAllPoints(self):
+                self.points = []
+
+            def AddRGBPoint(self, x, r, g, b):
+                self.points.append((x, r, g, b, 0.5, 0.0))
+
+            def AddPoint(self, x, y):
+                self.points.append((x, y))
+
+            def SetClamping(self, value):
+                self.clamping = value
+
+            def GetSize(self):
+                return len(self.points)
+
+            def GetNodeValue(self, index, node):
+                node[:] = list(self.points[index])
+
+        color, opacity = Function(), Function()
+        image = type("Image", (), {"GetNumberOfPoints": lambda self: 10, "GetScalarRange": lambda self: (0.0, 60.0)})()
+        volumeProperty = type("VP", (), {"GetRGBTransferFunction": lambda self, i: color})()
+        propertyNode = type("PN", (), {"GetVolumeProperty": lambda self: volumeProperty,
+                                       "GetScalarOpacity": lambda self: opacity, "Modified": lambda self: None})()
+        volume = type("V", (), {"GetImageData": lambda self: image})()
+        vrNode = type("VR", (), {"GetVolumePropertyNode": lambda self: propertyNode,
+                                 "GetVolumeNode": lambda self: volume, "Modified": lambda self: None})()
+        self.assertTrue(display.setMipTransferFunctions(vrNode, 0.0, 10.0))
+        self.assertEqual([p[0] for p in color.points], [0.0, 10.0, 60.0])
+        self.assertEqual(color.points[-1][1:4], (0.0, 0.0, 0.0))     # hottest voxel: black
+        self.assertEqual(opacity.points, [(0.0, 1.0), (60.0, 1.0)])
+        self.assertEqual((color.clamping, opacity.clamping), (1, 1))
+        self.assertEqual(display.mipGreyRange(vrNode), (0.0, 10.0))
+
+
+class RulerToolTest(unittest.TestCase):
+    """The distance ruler with a fake scene: one line per click, unfinished lines dropped, never an ROI node."""
+
+    def setUp(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        test = self
+
+        class Interaction:
+            Place, ViewTransform = 1, 2
+
+            def __init__(self):
+                self.mode, self.observers = self.ViewTransform, {}
+
+            def AddObserver(self, event, callback):
+                tag = len(self.observers) + 1
+                self.observers[tag] = callback
+                return tag
+
+            def RemoveObserver(self, tag):
+                self.observers.pop(tag, None)
+
+            def _modified(self):
+                for callback in list(self.observers.values()):
+                    callback(self, "ModifiedEvent")
+
+            def SetPlaceModePersistence(self, value):
+                self._modified()
+
+            def GetCurrentInteractionMode(self):
+                return self.mode
+
+            def SetCurrentInteractionMode(self, mode):
+                self.mode = mode
+                self._modified()
+
+            def SwitchToViewTransformMode(self):
+                self.SetCurrentInteractionMode(self.ViewTransform)
+
+        class Selection:
+            activeID = None
+
+            def SetReferenceActivePlaceNodeClassName(self, name):
+                pass
+
+            def SetActivePlaceNodeID(self, nodeID):
+                self.activeID = nodeID
+
+            def GetActivePlaceNodeID(self):
+                return self.activeID
+
+        class Line(_FakeNode):
+            def __init__(self, name, nodeID):
+                super().__init__()
+                self.name, self.nodeID, self.points, self.scene = name, nodeID, [], test.scene
+
+            def GetName(self):
+                return self.name
+
+            def GetID(self):
+                return self.nodeID
+
+            def GetScene(self):
+                return self.scene
+
+            def GetDisplayNode(self):
+                return SimpleNamespace(SetSelectedColor=lambda *a: None)
+
+            def GetNumberOfDefinedControlPoints(self):
+                return len(self.points)
+
+            def GetNumberOfControlPoints(self):
+                return len(self.points)
+
+            def GetNthControlPointPositionWorld(self, index, out):
+                out[:] = self.points[index]
+
+        class Scene:
+            def __init__(self):
+                self.nodes = []
+
+            def AddNewNodeByClass(self, className, name):
+                node = Line(name, f"vtkMRMLMarkupsLineNode{len(self.nodes) + 1}")
+                self.nodes.append(node)
+                return node
+
+            def RemoveNode(self, node):
+                self.nodes.remove(node)
+                node.scene = None
+
+        self.scene, self.interaction, self.selection = Scene(), Interaction(), Selection()
+        fakeSlicer = SimpleNamespace(
+            mrmlScene=self.scene,
+            app=SimpleNamespace(applicationLogic=lambda: SimpleNamespace(
+                GetInteractionNode=lambda: self.interaction, GetSelectionNode=lambda: self.selection)),
+            util=SimpleNamespace(getNodesByClass=lambda className: list(self.scene.nodes),
+                                 showStatusMessage=lambda *a: None))
+        self.patches = [mock.patch.object(measure, "slicer", fakeSlicer),
+                        mock.patch.object(measure, "vtk", SimpleNamespace(vtkCommand=SimpleNamespace(ModifiedEvent=33)))]
+        for patch in self.patches:
+            patch.start()
+        self.states = []
+        self.ruler = measure.RulerTool(self.states.append)
+
+    def tearDown(self):
+        for patch in self.patches:
+            patch.stop()
+
+    def test_line_kept_when_finished(self):
+        node = self.ruler.start()
+        self.assertTrue(measure.isRulerNode(node) and node.GetName() == "Ruler 1")
+        self.assertEqual(self.interaction.mode, self.interaction.Place)
+        self.assertEqual(self.selection.activeID, node.GetID())
+        node.points = [[0.0, 0.0, 0.0], [30.0, 40.0, 0.0]]
+        self.interaction.SwitchToViewTransformMode()          # Slicer ends single place mode after the 2nd point
+        self.assertEqual(self.scene.nodes, [node])
+        self.assertEqual(self.states, [True, False])
+        self.assertEqual(measure.RulerTool._lengthText(node), "50.0 mm")
+        self.assertIsNone(node.GetAttribute(roiset.ROI_SET_ATTRIBUTE))   # never an ROI set node
+        self.assertEqual(self.ruler.start().GetName(), "Ruler 2")
+
+    def test_cancelled_line_removed(self):
+        node = self.ruler.start()
+        node.points = [[0.0, 0.0, 0.0]]
+        self.interaction.SwitchToViewTransformMode()          # Escape after one point
+        self.assertEqual(self.scene.nodes, [])
+        self.assertFalse(self.ruler.placing)
+        self.ruler.start()
+        self.ruler.setPlacing(False)                          # button released
+        self.assertEqual(self.scene.nodes, [])
+        self.assertEqual(self.interaction.mode, self.interaction.ViewTransform)
+        self.assertEqual(self.interaction.observers, {})
+
+    def test_other_place_mode_ends_ruler(self):
+        self.ruler.start()
+        self.selection.SetActivePlaceNodeID("ROI points")    # e.g. Place ROI
+        self.interaction.SetCurrentInteractionMode(self.interaction.Place)
+        self.assertEqual(self.scene.nodes, [])
+        self.assertFalse(self.ruler.placing)
+
+    def test_delete_all(self):
+        first = self.ruler.start()
+        first.points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+        self.interaction.SwitchToViewTransformMode()
+        self.ruler.start()
+        self.ruler.deleteAll()
+        self.assertEqual(self.scene.nodes, [])
 
 
 if __name__ == "__main__":

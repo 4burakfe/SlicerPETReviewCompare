@@ -34,6 +34,7 @@ from EponaLib.layouts import (  # noqa: F401
     showOnSecondScreen, SINGLE_SCREEN_FALLBACK_LAYOUT_ID, SLICE_VIEW_ROLES,
 )
 from EponaLib.shortcuts import registerShortcut, unregisterShortcuts  # noqa: F401
+from EponaLib.measure import RulerTool  # noqa: F401
 from EponaLib.toolbar import (  # noqa: F401
     CT_PRESET_ICONS, EponaToolBar, isToolbarEnabled, LAYOUT_ICONS, MRI_PRESET_ICONS, PERCENT_PRESET_ICONS,
     richToolTip, SUV_PRESET_ICONS, TOOLBAR_SELECTOR_WIDTH,
@@ -48,7 +49,7 @@ from EponaLib.values import (  # noqa: F401
 from EponaLib.display import (  # noqa: F401
     bindWindowLevelSync, colorLegendsEnabled, CUSTOM_COLOR_MAPS, customColorNode, customColorRGB, fillHotIronTable,
     findColorNode, hotIronRGB, repairCustomColorNodes, setColorLegendsEnabled, showColorLegend, sliceNodeIDs,
-    SliceGeometrySync, syncSliceViewSize, TOOLBAR_HIDDEN_COLOR_MAPS,
+    mipGreyRange, setMipTransferFunctions, SliceGeometrySync, syncSliceViewSize, TOOLBAR_HIDDEN_COLOR_MAPS,
     unbindWindowLevelSync,
 )
 from EponaLib.roi import (  # noqa: F401
@@ -106,6 +107,7 @@ VIEW_SYNC_DELAY_MS = 250
 MIP_FIT_HEIGHT_MM = 1200.0
 # Fit again once the orthographic switch and the layout change have been applied (after alignSliceViews' 150 ms)
 MIP_FIT_DELAY_MS = 300
+MIP_RANGE_REFRESH_DELAYS_MS = (MIP_FIT_DELAY_MS + 100, 1500)   # after Go: the MIP view has rendered by then
 # Slice views are fitted again after a layout switch, once the views have their final size (the Monitor 2 window
 # is placed after DUAL_MONITOR_PLACE_DELAY_MS, then maximized: dual monitor layouts get a second, later pass)
 SLICE_FIT_DELAY_MS = 450
@@ -595,6 +597,10 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for letter, axis, name in (("A", 3, "Anterior"), ("L", 0, "Left"), ("R", 1, "Right")):
             toolbar.addTextButton(letter, richToolTip(f"MIP: {name} view", "Stops the rotation"),
                                   lambda axis=axis: self.rotateMIPToViewAxis(axis))
+        # Distance ruler: for looking only, the lines never go into the ROI table
+        toolbar.addSeparator()
+        self.ruler = RulerTool()
+        toolbar.addRulerButton(self.ruler)
         toolbar.addWindowButtons()
         self.syncToolbar()
 
@@ -1144,10 +1150,18 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.refreshFilterModels()  # models may have been added to the folder in the meantime
 
     def exit(self):
+        if getattr(self, "ruler", None) is not None:
+            self.ruler.cancel()   # an unfinished ruler line does not wait for clicks in another module
         if self.toolbar is not None:
             self.toolbar.exit()   # hidden, and the module panel comes back if the toolbar had hidden it
 
     def cleanup(self):
+        if getattr(self, "ruler", None) is not None:
+            try:
+                self.ruler.release()
+            except Exception:
+                logging.exception("EasyFusion: could not release the ruler")
+            self.ruler = None
         if self.toolbar is not None:
             try:
                 self.toolbar.destroy()
@@ -1311,6 +1325,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     self.logic.setMIPRange(vrDisplayNode, displayNode.GetLevel() - displayNode.GetWindow() / 2.0,
                                            displayNode.GetLevel() + displayNode.GetWindow() / 2.0, flatOpacity=True)
                     self.logic.showMipOnlyInMipView(vrDisplayNode)
+            self.scheduleMIPRangeRefresh(pet)   # a new MIP (made here or moved from the previous SPECT/PET)
 
         if ct is not oldCt:
             # Window left to the volume itself (Slicer's auto window for a new one); presets set it afterwards
@@ -1367,6 +1382,10 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         mipDisplayNode = self.logic.mipDisplayNode(petNode, create=True)
         mipDisplayNode.SetVisibility(True)
         self.logic.setMIPRange(mipDisplayNode, lower, upper, flatOpacity=True)
+        # A MIP made by this Go is drawn for the first time only after this function returns; on that first
+        # rendering the hottest voxels could come out white until a window preset set the range again. Do what
+        # a preset does once the view has rendered (see refreshMIPRange).
+        self.scheduleMIPRangeRefresh(petNode)
         # Rendered in the EasyFusion 3D view only, and that same view node is switched to MIP
         viewNode = self.logic.showMipOnlyInMipView(mipDisplayNode)
         self._isolateMipView(petNode)
@@ -1781,6 +1800,30 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             displayNode.SetAutoWindowLevel(False)
             displayNode.SetWindow(window)
             displayNode.SetLevel(level)
+
+    def scheduleMIPRangeRefresh(self, petNode):
+        """Set the MIP range again (as a window preset does) after the MIP view's first renderings."""
+        for delay in MIP_RANGE_REFRESH_DELAYS_MS:
+            qt.QTimer.singleShot(delay, lambda petNode=petNode: self.refreshMIPRange(petNode))
+
+    def refreshMIPRange(self, petNode):
+        """Set the MIP's grey range again, through the same code as the window presets."""
+        try:
+            if petNode is None or petNode.GetScene() is None or petNode is not self.inputVolumeSelector.currentNode():
+                return
+            vrDisplayNode = self.logic.mipDisplayNode(petNode)
+            if vrDisplayNode is None:
+                return
+            greyRange = mipGreyRange(vrDisplayNode)   # the range just set (a preset meanwhile is kept)
+            if greyRange is None:
+                displayNode = petNode.GetDisplayNode()
+                if displayNode is None:
+                    return
+                window, level = displayNode.GetWindow(), displayNode.GetLevel()
+                greyRange = (level - window / 2.0, level + window / 2.0)
+            self.logic.setMIPRange(vrDisplayNode, *greyRange)
+        except Exception:
+            logging.debug("EasyFusion: could not refresh the MIP range", exc_info=True)
 
     def setPETWindow(self, window, level):
         """Window / level of the PET in the slice views (PET-only views follow) and the MIP grey range."""
@@ -2829,33 +2872,12 @@ class Easy_fusionLogic(ScriptedLoadableModuleLogic):
         return displayNode
 
     @staticmethod
-    def setMIPRange(vrDisplayNode, lower, upper, flatOpacity=False):
-        """MIP shows white at `lower` to black at `upper`. flatOpacity: every intensity fully opaque (set by Go)."""
-        propertyNode = vrDisplayNode.GetVolumePropertyNode() if vrDisplayNode is not None else None
-        if propertyNode is None:
+    def setMIPRange(vrDisplayNode, lower, upper, flatOpacity=True):
+        """MIP shows white at `lower` to black at `upper`, every intensity opaque. Go, the window presets and a new
+        SPECT/PET all use this same setup (EponaLib.display.setMipTransferFunctions, shared with Compare)."""
+        if vrDisplayNode is None:
             return
-        colorFunction = propertyNode.GetVolumeProperty().GetRGBTransferFunction(0)
-        colorFunction.RemoveAllPoints()
-        colorFunction.AddRGBPoint(lower, 1.0, 1.0, 1.0)
-        colorFunction.AddRGBPoint(upper, 0.0, 0.0, 0.0)
-        if flatOpacity:
-            # Opacity 1 over the whole data range. VTK sizes the GPU opacity table as (data range / smallest
-            # distance between points); with points only at lower / upper, a narrow grey range on a volume with
-            # large values (e.g. Bq/mL, counts) needs millions of entries: "required texture size ... falling
-            # back to maximum allowed". Points at the data minimum / maximum give a tiny table, same result.
-            opacityLower, opacityUpper = lower, upper
-            volumeNode = vrDisplayNode.GetVolumeNode()
-            imageData = volumeNode.GetImageData() if volumeNode is not None else None
-            if imageData is not None and imageData.GetNumberOfPoints() > 0:
-                dataMinimum, dataMaximum = imageData.GetScalarRange()
-                opacityLower, opacityUpper = min(lower, dataMinimum), max(upper, dataMaximum)
-            scalarOpacity = propertyNode.GetScalarOpacity()
-            scalarOpacity.RemoveAllPoints()
-            scalarOpacity.AddPoint(opacityLower, 1.0)
-            if opacityUpper > opacityLower:
-                scalarOpacity.AddPoint(opacityUpper, 1.0)
-        propertyNode.Modified()
-        vrDisplayNode.Modified()
+        setMipTransferFunctions(vrDisplayNode, lower, upper, flatOpacity=flatOpacity)
 
     @staticmethod
     def mipThreeDWidget():
@@ -3431,7 +3453,8 @@ class Easy_fusionLogic(ScriptedLoadableModuleLogic):
         lower = upper = None
         propertyNode = sourceVr.GetVolumePropertyNode()
         if keepRange and propertyNode is not None:
-            lower, upper = propertyNode.GetVolumeProperty().GetRGBTransferFunction(0).GetRange()
+            # Not the color function's range: its end points reach out to the data minimum / maximum
+            lower, upper = mipGreyRange(sourceVr) or (None, None)
         if lower is None or not upper > lower:
             displayNode = targetNode.GetDisplayNode()
             lower = displayNode.GetLevel() - displayNode.GetWindow() / 2.0

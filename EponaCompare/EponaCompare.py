@@ -28,6 +28,7 @@ from EponaLib.display import (  # noqa: E402
     colorLegendsEnabled, setColorLegendsEnabled, showColorLegend, SliceGeometrySync, sliceNodeIDs,
     TOOLBAR_HIDDEN_COLOR_MAPS, WindowLevelLink,
 )
+from EponaLib.measure import RulerTool  # noqa: E402
 from EponaLib.overlays import MipRoiOverlay, SliceWindowInfoOverlay  # noqa: E402
 from EponaLib.roi import (  # noqa: E402
     DEFAULT_ABSOLUTE_THRESHOLD, DEFAULT_RELATIVE_THRESHOLD, DEFAULT_ROI_RADIUS_MM,
@@ -91,6 +92,7 @@ PET_COLOR_MAPS = [("Hot Iron", views.HOT_IRON_NAME), ("Inferno", "Inferno"), ("R
                   ("TruGold", "TruGold"), ("Valhalla", "Valhalla")]
 DEFAULT_CT_WINDOW = (400.0, 40.0)              # abdomen
 COMPARE_DUAL_MONITOR_FIT_DELAY_MS = 900         # second fit of the views after the Monitor 2 window is placed
+MIP_RANGE_REFRESH_DELAYS_MS = (400, 1500)        # MIP range set again once a new MIP has been rendered
 COMPARE_LAYOUT_BUTTONS = [
     (LAYOUT_COMPARE_AXIAL_CT_ID, "Axial Fusion | CT + MIP",
      "Rows: time point 1 (top), time point 2 (bottom).\nColumns: axial fusion | axial CT/MRI | MIP"),
@@ -395,6 +397,12 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.refreshReading(fit=False)
 
     def cleanup(self):
+        if getattr(self, "ruler", None) is not None:
+            try:
+                self.ruler.release()
+            except Exception:
+                logging.exception("EponaCompare: could not release the ruler")
+            self.ruler = None
         if self.toolbar is not None:
             try:
                 self.toolbar.destroy()
@@ -434,6 +442,8 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateToolbarButton()
 
     def exit(self):
+        if getattr(self, "ruler", None) is not None:
+            self.ruler.cancel()   # an unfinished ruler line does not wait for clicks in another module
         if self.toolbar is not None:
             self.toolbar.exit()   # hidden, and the module panel comes back if the toolbar had hidden it
 
@@ -881,6 +891,10 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for letter, axis, name in (("A", 3, "Anterior"), ("L", 0, "Left"), ("R", 1, "Right")):
             toolbar.addTextButton(letter, richToolTip(f"MIPs: {name} view", "Both time points; stops the rotation"),
                                   lambda axis=axis: self.onQuickView(axis))
+        # Distance ruler: for looking only, the lines never go into the ROI tables
+        toolbar.addSeparator()
+        self.ruler = RulerTool()
+        toolbar.addRulerButton(self.ruler)
         toolbar.addWindowButtons()
         self.syncToolbar()
 
@@ -1957,10 +1971,21 @@ class EponaCompareLogic(ScriptedLoadableModuleLogic):
             if pet is not None:
                 lower, upper = views.windowRange(pet) or (0.0, 1.0)
                 views.showMip(timePoint, pet, lower, upper)
+        # A new MIP is drawn for the first time only after this returns; on that first rendering the hottest voxels
+        # could come out white until a window preset set the range again. Do what a preset does once it has rendered.
+        for delay in MIP_RANGE_REFRESH_DELAYS_MS:
+            qt.QTimer.singleShot(delay, self.refreshMipRanges)
         views.isolateMipViews()
         _geometrySync.setGroups(views.geometryGroups())
         self.updateColorLegends(timePoints)
         return twins
+
+    def refreshMipRanges(self):
+        try:
+            for timePoint, (pet, _) in self.timePoints().items():
+                views.refreshMipRange(timePoint, pet)
+        except Exception:
+            logging.debug("EponaCompare: could not refresh the MIP ranges", exc_info=True)
 
     @staticmethod
     def updateColorLegends(timePoints):

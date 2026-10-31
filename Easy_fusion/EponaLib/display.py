@@ -464,3 +464,99 @@ def showColorLegend(owner, volumeNode, viewNodeIDs, title=""):
     finally:
         legend.EndModify(wasModifying)
     return legend
+
+
+# ---------------------------------------------------------------------------
+# MIP transfer functions (Epona's MIP and the compare MIPs)
+# ---------------------------------------------------------------------------
+
+MIP_END_POINT_MIN_GAP = 0.05   # extra end points only when this fraction of the window away (small GPU tables)
+
+
+def mipColorPoints(lower, upper, dataRange=None, minGap=MIP_END_POINT_MIN_GAP):
+    """
+    (value, grey) points of the MIP color function: white (1) at `lower` to black (0) at `upper`. White is
+    carried down to the data minimum and black up to the data maximum, so every voxel value lies inside the
+    function: the hottest voxels stay black whatever range the GPU builds its color table over (values outside
+    the function's own range were drawn white after the first Go until a window preset rebuilt the MIP).
+    An end point closer than minGap x window is left out (clamping covers it, and the GPU table stays small).
+    """
+    lower, upper = float(lower), float(upper)
+    if not upper > lower:
+        upper = lower + max(abs(lower) * 1e-6, 1e-6)
+    points = [(lower, 1.0), (upper, 0.0)]
+    if dataRange is not None:
+        gap = (upper - lower) * minGap
+        dataMinimum, dataMaximum = float(dataRange[0]), float(dataRange[1])
+        if dataMinimum < lower - gap:
+            points.insert(0, (dataMinimum, 1.0))
+        if dataMaximum > upper + gap:
+            points.append((dataMaximum, 0.0))
+    return points
+
+
+def _setClamping(function):
+    setter = getattr(function, "SetClamping", None)
+    if setter is not None:
+        setter(1)
+
+
+def setMipTransferFunctions(vrDisplayNode, lower, upper, flatOpacity=True):
+    """
+    MIP from white at `lower` to black at `upper` (see mipColorPoints). flatOpacity: every intensity fully opaque;
+    the opacity points sit at the data minimum / maximum, as VTK sizes the GPU opacity table as (table range /
+    smallest distance between points): points only at lower / upper on a volume with large values (Bq/mL, counts)
+    would need millions of entries ("required texture size ... falling back to maximum allowed").
+    Returns False when the display node has no volume property.
+    """
+    propertyNode = vrDisplayNode.GetVolumePropertyNode() if vrDisplayNode is not None else None
+    if propertyNode is None:
+        return False
+    volumeNode = vrDisplayNode.GetVolumeNode()
+    imageData = volumeNode.GetImageData() if volumeNode is not None else None
+    dataRange = None
+    if imageData is not None and imageData.GetNumberOfPoints() > 0:
+        dataRange = imageData.GetScalarRange()
+    colorFunction = propertyNode.GetVolumeProperty().GetRGBTransferFunction(0)
+    colorFunction.RemoveAllPoints()
+    for value, grey in mipColorPoints(lower, upper, dataRange):
+        colorFunction.AddRGBPoint(value, grey, grey, grey)
+    _setClamping(colorFunction)
+    if flatOpacity:
+        opacityLower, opacityUpper = lower, upper
+        if dataRange is not None:
+            opacityLower, opacityUpper = min(lower, dataRange[0]), max(upper, dataRange[1])
+        scalarOpacity = propertyNode.GetScalarOpacity()
+        scalarOpacity.RemoveAllPoints()
+        scalarOpacity.AddPoint(opacityLower, 1.0)
+        if opacityUpper > opacityLower:
+            scalarOpacity.AddPoint(opacityUpper, 1.0)
+        _setClamping(scalarOpacity)
+    propertyNode.Modified()
+    vrDisplayNode.Modified()
+    return True
+
+
+def greyRangeFromPoints(points):
+    """(lower, upper) from MIP color points (value, grey): the last white and the first black point; None if
+    the function is not a white-to-black ramp."""
+    whites = [value for value, grey in points if grey >= 0.5]
+    blacks = [value for value, grey in points if grey < 0.5]
+    if not whites or not blacks:
+        return None
+    lower, upper = max(whites), min(blacks)
+    return (lower, upper) if upper > lower else None
+
+
+def mipGreyRange(vrDisplayNode):
+    """The window (lower, upper) of a MIP made by setMipTransferFunctions (also the 2-point MIPs of older scenes)."""
+    propertyNode = vrDisplayNode.GetVolumePropertyNode() if vrDisplayNode is not None else None
+    if propertyNode is None:
+        return None
+    colorFunction = propertyNode.GetVolumeProperty().GetRGBTransferFunction(0)
+    points = []
+    for index in range(colorFunction.GetSize()):
+        node = [0.0] * 6
+        colorFunction.GetNodeValue(index, node)
+        points.append((node[0], (node[1] + node[2] + node[3]) / 3.0))
+    return greyRangeFromPoints(points)

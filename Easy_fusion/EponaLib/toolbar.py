@@ -165,6 +165,8 @@ class EponaToolBar:
         self._colorIconsReady = False
         self._rotationButton = None
         self._legendButton = None
+        self._rulerButton = None
+        self._rulerMenu = None
         self._panelButton = None
         self._panelHiddenByToolbar = False
 
@@ -312,6 +314,36 @@ class EponaToolBar:
         button.blockSignals(wasBlocked)
         button.setToolTip(richToolTip("Hide the color legend" if shown else "Show the color legend",
                                       "Color bar of the SPECT/PET color map in the fusion views"))
+
+    def addRulerButton(self, ruler):
+        """
+        Distance ruler (EponaLib.measure.RulerTool): click = measure one distance (two clicks in a slice view), the
+        button stays pressed while placing. The arrow next to it has "Delete all measurements".
+        """
+        button = self.addButton("ruler", richToolTip("Measure distance",
+                                                     "Click the two ends in a slice view; Esc cancels.\n"
+                                                     "Only for measuring: not added to the ROI tables.\n"
+                                                     "Arrow: delete all measurements"),
+                                lambda: ruler.setPlacing(self._rulerButton.checked), GLYPH_ICON_SIZE, checkable=True)
+        self._rulerButton = button
+        try:
+            menu = qt.QMenu(button)
+            menu.addAction("Delete all measurements").connect("triggered()", ruler.deleteAll)
+            button.setMenu(menu)
+            button.setPopupMode(qt.QToolButton.MenuButtonPopup)
+            self._rulerMenu = menu
+        except Exception:
+            logging.debug("Epona: could not add the ruler menu", exc_info=True)
+        ruler.onPlacingChanged = self.setRulerActive
+        return button
+
+    def setRulerActive(self, placing):
+        button = self._rulerButton
+        if button is None:
+            return
+        wasBlocked = button.blockSignals(True)
+        button.checked = bool(placing)
+        button.blockSignals(wasBlocked)
 
     def addTextButton(self, text, toolTip, callback, group=None):
         """Small button showing a letter or two (e.g. the MIP quick views A / L / R)."""

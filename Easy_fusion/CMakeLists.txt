@@ -16,6 +16,7 @@ set(MODULE_PYTHON_SCRIPTS
   EponaLib/filters.py
   EponaLib/overlays.py
   EponaLib/registration.py
+  EponaLib/measure.py
   EponaLib/compareviews.py
   EponaLib/toolbar.py
   EponaLib/tests.py
@@ -57,6 +58,7 @@ set(MODULE_PYTHON_RESOURCES
   Resources/Icons/Toolbar/preset_suv_25.png
   Resources/Icons/Toolbar/preset_suv_5.png
   Resources/Icons/Toolbar/preset_suv_7.png
+  Resources/Icons/Toolbar/ruler.png
   Resources/Icons/Toolbar/toolbar_hide.png
   Resources/ColorMaps/Hel.csv
   Resources/ColorMaps/Jotun.csv
