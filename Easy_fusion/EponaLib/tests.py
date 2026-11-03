@@ -1352,6 +1352,32 @@ class RoiKeyTest(unittest.TestCase):
         self.assertEqual(shortcuts.firstKeyCombination(","), ",")
         self.assertEqual(shortcuts.firstKeyCombination(None), "")
 
+    def test_display_key(self):
+        self.assertEqual(shortcuts.displayKey("Ins"), "Insert")
+        self.assertEqual(shortcuts.displayKey("Ctrl+Ins"), "Ctrl+Insert")
+        self.assertEqual(shortcuts.displayKey("F2"), "F2")
+        self.assertEqual(shortcuts.displayKey("+"), "+")
+
+    @unittest.skipUnless(_STAND_INS, "uses stand-ins for Qt / Slicer (inside Slicer it would change real settings)")
+    def test_insert_and_ins_are_one_key(self):
+        """Qt writes Insert as "Ins": resetting to Insert while Insert is in use must not be refused."""
+        registry, state = {}, {"key": None, "handlers": {}, "listeners": {}}
+        qtNames = {"Insert": "Ins", "Ins": "Ins", "Key_F5": "F5"}   # what QKeySequence(...).toString() gives
+        with mock.patch.object(shortcuts, "_registry", return_value=registry), \
+                mock.patch.object(shortcuts, "_roiState", return_value=state), \
+                mock.patch.object(shortcuts, "keyText", side_effect=lambda key: qtNames.get(key, str(key))), \
+                mock.patch.object(shortcuts.qt.QSettings(), "value", return_value=None):
+            shortcuts.registerShortcut("Easy_fusion", "Key_F5", print)
+            shortcuts.registerRoiShortcut("Easy_fusion", print)
+            self.assertEqual(shortcuts.roiKey(), "Ins")
+            self.assertEqual(shortcuts.roiKeyLabel(), "Insert")
+            with mock.patch.object(shortcuts.slicer.util.mainWindow(), "findChildren", return_value=[]):
+                self.assertIsNone(shortcuts.resetRoiKey())
+                self.assertIsNone(shortcuts.setRoiKey("Insert"))
+                self.assertIn("already used", shortcuts.setRoiKey("Key_F5"))
+                self.assertIsNone(shortcuts.setRoiKey("F2"))
+            self.assertEqual(set(registry), {"Key_F5", "F2"})
+
     def test_check_roi_key(self):
         used = {"F5": "the Epona modules (window presets)", "Ctrl+S": "Slicer ('Save')"}
         self.assertIsNone(shortcuts.checkRoiKey("F2", used))

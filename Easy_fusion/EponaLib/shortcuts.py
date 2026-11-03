@@ -112,6 +112,23 @@ def firstKeyCombination(text):
     return text.split(", ")[0].strip()
 
 
+_KEY_LABELS = {"Ins": "Insert", "Del": "Delete", "PgUp": "Page Up", "PgDown": "Page Down", "Esc": "Escape"}
+
+
+def displayKey(text):
+    """Readable key name for labels: Qt writes Insert as "Ins" ("Ctrl+Ins" -> "Ctrl+Insert")."""
+    parts = str(text or "").split("+")
+    return "+".join(_KEY_LABELS.get(part, part) for part in parts) if text != "+" else "+"
+
+
+def canonicalKey(text):
+    """One spelling per key ("Insert" and "Ins" are the same key): Qt's portable text of the first combination."""
+    first = firstKeyCombination(text)
+    if not first:
+        return ""
+    return firstKeyCombination(keyText(first)) or first
+
+
 def checkRoiKey(text, usedKeys):
     """
     None if text can be the ROI key, else the reason why not (shown to the user).
@@ -122,9 +139,9 @@ def checkRoiKey(text, usedKeys):
         return "No key was pressed."
     lastKey = text.split("+")[-1] if text != "+" else "+"
     if text in FORBIDDEN_ROI_KEYS or lastKey in ("Shift", "Ctrl", "Alt", "Meta"):
-        return f"'{text}' cannot be used for placing ROIs (Slicer needs it for itself)."
+        return f"'{displayKey(text)}' cannot be used for placing ROIs (Slicer needs it for itself)."
     if text in usedKeys:
-        return f"'{text}' is already used by {usedKeys[text]}."
+        return f"'{displayKey(text)}' is already used by {usedKeys[text]}."
     return None
 
 
@@ -136,14 +153,19 @@ def roiKey():
             saved = qt.QSettings().value(SETTINGS_ROI_KEY)
         except Exception:
             saved = None
-        state["key"] = firstKeyCombination(saved) if saved else DEFAULT_ROI_KEY
+        state["key"] = canonicalKey(saved) or canonicalKey(DEFAULT_ROI_KEY) or DEFAULT_ROI_KEY
     return state["key"]
+
+
+def roiKeyLabel():
+    """The current ROI key for labels and messages ("Insert", "F2", "Ctrl+R")."""
+    return displayKey(roiKey())
 
 
 def usedKeys():
     """{key text: who uses it} of the modules' other shortcuts and of Slicer's menu / toolbar actions."""
     used = {}
-    roiText = roiKey()
+    roiText = canonicalKey(roiKey())   # the ROI key's own entry is not "used" (spelled Insert or Ins)
     mainWindow = slicer.util.mainWindow()
     if mainWindow is not None:
         try:
@@ -179,16 +201,17 @@ def setRoiKey(text):
     Use another key for placing ROIs (both modules) and remember it. Returns None on success, else the reason
     why the key cannot be used (nothing is changed then).
     """
-    text = firstKeyCombination(keyText(firstKeyCombination(text)) if text else "")
+    text = canonicalKey(text)
     oldKey = roiKey()
-    if text == oldKey:
+    if text == oldKey or (text and text == canonicalKey(oldKey)):
         return None
     problem = checkRoiKey(text, usedKeys())
     if problem:
         return problem
     state = _roiState()
     for owner, (callback, predicate) in list(state["handlers"].items()):
-        _removeHandler(owner, oldKey)
+        for spelling in {oldKey, canonicalKey(oldKey)}:
+            _removeHandler(owner, spelling)
         registerShortcut(owner, text, callback, predicate)
     state["key"] = text
     try:
@@ -197,7 +220,7 @@ def setRoiKey(text):
         logging.exception("Epona: could not save the ROI key")
     for owner, listener in list(state["listeners"].items()):
         try:
-            listener(text)
+            listener(displayKey(text))
         except Exception:
             logging.exception(f"Epona: ROI key listener of {owner} failed")
     return None
@@ -279,7 +302,7 @@ class RoiKeyEditor:
         self.refresh()
 
     def refresh(self, text=None):
-        text = text or roiKey()
+        text = displayKey(canonicalKey(text) if text else roiKey())
         wasBlocked = self.edit.blockSignals(True)
         try:
             if self._isSequenceEdit:
@@ -291,7 +314,10 @@ class RoiKeyEditor:
 
     def _currentText(self):
         if self._isSequenceEdit:
-            return str(self.edit.keySequence().toString())
+            sequence = self.edit.keySequence   # PythonQt: a property (calling it fails), plain PyQt: a method
+            if callable(sequence):
+                sequence = sequence()
+            return str(sequence.toString())
         return str(self.edit.text)
 
     def _apply(self, text):
@@ -299,7 +325,7 @@ class RoiKeyEditor:
         if problem:
             slicer.util.warningDisplay(f"The ROI key was not changed: {problem}", windowTitle="Epona")
         else:
-            slicer.util.showStatusMessage(f"Epona: ROIs are now placed with {roiKey()}.", 3000)
+            slicer.util.showStatusMessage(f"Epona: ROIs are now placed with {roiKeyLabel()}.", 3000)
         self.refresh()
 
     def _onEdited(self):

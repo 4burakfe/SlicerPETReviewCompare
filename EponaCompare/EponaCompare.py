@@ -38,7 +38,7 @@ from EponaLib.roi import (  # noqa: E402
 from EponaLib.roiset import SphereRoiSet  # noqa: E402
 from EponaLib.scene import runWhenSceneSettled, sceneIsBusy  # noqa: E402
 from EponaLib.shortcuts import (  # noqa: E402
-    RoiKeyEditor, registerRoiShortcut, registerShortcut, roiKey, unregisterShortcuts, viewUnderCursor,
+    RoiKeyEditor, registerRoiShortcut, registerShortcut, roiKeyLabel, unregisterShortcuts, viewUnderCursor,
 )
 from EponaLib import slicescroll  # noqa: E402
 from EponaLib.studyinfo import imagingTime, volumeLabel  # noqa: E402
@@ -1285,7 +1285,7 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         form.addRow(buttons)
         self.roiKeyEditor = RoiKeyEditor()
         form.addRow("ROI key:", self.roiKeyEditor.widget)
-        self.onRoiKeyChanged(roiKey())
+        self.onRoiKeyChanged(roiKeyLabel())
 
         thresholdLayout = qt.QHBoxLayout()
         self.thresholdModeComboBox = qt.QComboBox()
@@ -1627,8 +1627,8 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         view = viewUnderCursor()
         timePoint = compareViewTimePoint(view[1]) if view is not None else None
         if timePoint is None or view[0] != "slice":
-            slicer.util.showStatusMessage(f"EponaCompare: hover the mouse over a slice view, then press {roiKey()}.",
-                                          3000)
+            slicer.util.showStatusMessage(
+                f"EponaCompare: hover the mouse over a slice view, then press {roiKeyLabel()}.", 3000)
             return
         pet = self.pet(timePoint)
         if pet is None:
