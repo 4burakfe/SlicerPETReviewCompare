@@ -44,8 +44,8 @@ import numpy as np
 
 _STAND_INS = "mock" in globals()   # plain Python run: qt / slicer are stand-ins
 
-from . import (display, filters, layouts, measure, registration, roi, roiset, shortcuts, slicescroll, studyinfo,
-               toolbar, values)
+from . import (display, filters, layouts, measure, mippick, registration, roi, roiset, shortcuts, slicescroll,
+               studyinfo, toolbar, values)
 
 
 def _syntheticVolumes(seed=0):
@@ -1478,6 +1478,81 @@ class LeftDragSliceScrollTest(unittest.TestCase):
         interactor.ctrl = 1
         self.assertEqual(self._drag(interactor, [20]), [])
         self.assertEqual(interactor.aborted, [])
+
+
+class MipPickTest(unittest.TestCase):
+    """ROI on the MIP: hottest voxel along the line of sight; clicks while placing go to the module."""
+
+    def test_clip_line_to_box(self):
+        t = mippick.clipLineToBox([-10, 1, 1], [10, 1, 1], [0, 0, 0], [4, 4, 4])
+        self.assertAlmostEqual(t[0], 0.5)
+        self.assertAlmostEqual(t[1], 0.7)
+        self.assertIsNone(mippick.clipLineToBox([-10, 9, 1], [10, 9, 1], [0, 0, 0], [4, 4, 4]))
+        self.assertIsNone(mippick.clipLineToBox([1, 9, 1], [1, 9, 1.5], [0, 0, 0], [4, 4, 4]))
+
+    def test_brightest_voxel_on_axis_ray(self):
+        array = np.zeros((5, 6, 7))       # [k, j, i]
+        array[3, 2, 4] = 9.0              # on the ray (i = 4, j = 2)
+        array[1, 2, 1] = 20.0             # hotter, but not on the ray
+        array[0, 2, 4] = 5.0
+        # ray along k from far outside the volume, both directions (the line is infinite)
+        self.assertEqual(mippick.brightestVoxelOnLine(array, [4, 2, -100], [4, 2, -99]), (4, 2, 3))
+        self.assertEqual(mippick.brightestVoxelOnLine(array, [4, 2, 100], [4, 2, 99]), (4, 2, 3))
+        # half-voxel offsets round to the voxel the ray passes through
+        self.assertEqual(mippick.brightestVoxelOnLine(array, [4.3, 1.8, 0], [4.3, 1.8, 1]), (4, 2, 3))
+
+    def test_brightest_voxel_oblique_and_ties(self):
+        array = np.zeros((10, 10, 10))
+        for n in range(10):
+            array[n, n, n] = 1.0
+        array[7, 7, 7] = 3.0
+        self.assertEqual(mippick.brightestVoxelOnLine(array, [0, 0, 0], [1, 1, 1]), (7, 7, 7))
+        array[7, 7, 7] = 1.0              # all equal: the voxel nearest the viewer (start side)
+        self.assertEqual(mippick.brightestVoxelOnLine(array, [12, 12, 12], [11, 11, 11]), (9, 9, 9))
+
+    def test_brightest_voxel_misses(self):
+        array = np.ones((4, 4, 4))
+        self.assertIsNone(mippick.brightestVoxelOnLine(array, [10, 10, 0], [10, 10, 1]))
+        self.assertIsNone(mippick.brightestVoxelOnLine(np.full((2, 2, 2), np.nan), [0, 0, 0], [0, 0, 1]))
+        self.assertIsNone(mippick.brightestVoxelOnLine(np.ones((4, 4)), [0, 0, 0], [0, 0, 1]))
+        array[2, 1, 1] = np.nan           # NaN voxels are skipped, not taken as the maximum
+        array[3, 1, 1] = 2.0
+        self.assertEqual(mippick.brightestVoxelOnLine(array, [1, 1, 0], [1, 1, 1]), (1, 1, 3))
+
+    def test_point_outside_view(self):
+        self.assertFalse(mippick.pointOutsideView([10, 10, 0, 1], 100, 50))
+        self.assertTrue(mippick.pointOutsideView([-1, 10, 0, 1], 100, 50))
+        self.assertTrue(mippick.pointOutsideView([10, 51, 0, 1], 100, 50))
+
+    def _click(self, handlers, placing=True):
+        placer = mippick.MipClickPlacer()
+        placer.handlers = dict(handlers)
+        interactor = _FakeInteractor()
+        interactor.y = 33
+        placer.installed["vtkMRMLViewNode1"] = (interactor, [1, 2])
+        placer._abort = lambda key, caller, index: caller.aborted.append(index)
+        placer._widget = lambda key: "widget"
+        with mock.patch.object(mippick, "placeModeActive", return_value=placing):
+            placer._onPress("vtkMRMLViewNode1", interactor)
+            placer._onRelease("vtkMRMLViewNode1", interactor)
+        return interactor
+
+    @unittest.skipUnless(_STAND_INS, "uses stand-ins for Qt / Slicer")
+    def test_click_handed_to_module(self):
+        calls = []
+        interactor = self._click({"A": lambda w, x, y: calls.append(("A", w, x, y)) or False,
+                                  "B": lambda w, x, y: calls.append(("B", w, x, y)) or True})
+        self.assertEqual(calls, [("A", "widget", 10, 33), ("B", "widget", 10, 33)])
+        self.assertEqual(interactor.aborted, [0, 1])   # Slicer does not place a point of its own
+
+    @unittest.skipUnless(_STAND_INS, "uses stand-ins for Qt / Slicer")
+    def test_click_left_to_slicer(self):
+        calls = []
+        interactor = self._click({"A": lambda w, x, y: calls.append("A") or False})
+        self.assertEqual(interactor.aborted, [])        # no module placed: rotate / Slicer's own placing
+        interactor = self._click({"A": lambda w, x, y: calls.append("A") or True}, placing=False)
+        self.assertEqual(interactor.aborted, [])        # not placing: the MIP rotates as usual
+        self.assertEqual(calls, ["A"])
 
 
 if __name__ == "__main__":

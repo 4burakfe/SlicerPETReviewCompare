@@ -17,6 +17,7 @@ set(MODULE_PYTHON_SCRIPTS
   EponaLib/overlays.py
   EponaLib/registration.py
   EponaLib/slicescroll.py
+  EponaLib/mippick.py
   EponaLib/measure.py
   EponaLib/compareviews.py
   EponaLib/toolbar.py

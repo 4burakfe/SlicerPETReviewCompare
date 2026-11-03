@@ -34,9 +34,10 @@ from EponaLib.layouts import (  # noqa: F401
     showOnSecondScreen, SINGLE_SCREEN_FALLBACK_LAYOUT_ID, SLICE_VIEW_ROLES,
 )
 from EponaLib.shortcuts import (  # noqa: F401
-    RoiKeyEditor, registerRoiShortcut, registerShortcut, roiKeyLabel, unregisterShortcuts,
+    RoiKeyEditor, registerRoiShortcut, registerShortcut, roiKeyLabel, unregisterShortcuts, viewUnderCursor,
 )
 from EponaLib import slicescroll  # noqa: E402
+from EponaLib import mippick  # noqa: E402
 from EponaLib.measure import RulerTool  # noqa: F401
 from EponaLib.toolbar import (  # noqa: F401
     CT_PRESET_ICONS, EponaToolBar, isToolbarEnabled, LAYOUT_ICONS, MRI_PRESET_ICONS, PERCENT_PRESET_ICONS,
@@ -180,6 +181,8 @@ class Easy_fusion(ScriptedLoadableModule):
         3D views F5-F9 give the SUV presets for SUV volumes and 10-100% of the maximum otherwise.
         Press Insert (or the key chosen under "ROI key") over a slice view to drop
         an ROI at the cursor; drag the yellow edge handles to resize it.
+        Over the MIP (or with Place ROI and a click on the MIP) the ROI goes to the hottest voxel along the
+        line of sight under the mouse, and the slice views jump to it.
         Hold the left mouse button and drag up / down in a slice view to browse slices (can be turned off under
         Layouts; Slicer's window / level drag is used then).
         PET presets set a fixed SUV range; SPECT presets set 0 to a percentage of the maximum count in the image.
@@ -1064,7 +1067,8 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.placeRoiButton.text = f"Place ROI ({key})"
         self.placeRoiButton.setToolTip(
             "Click once on a slice view to drop a spherical ROI centered there.\n"
-            f"Shortcut: hover over a slice view and press {key} to drop an ROI at the mouse cursor.\n"
+            "On the MIP, the ROI goes to the hottest voxel along the line of sight and the slices jump to it.\n"
+            f"Shortcut: hover over a slice view or the MIP and press {key} to drop an ROI at the mouse cursor.\n"
             "Drag the center point to move the ROI; drag a yellow handle on its edge to resize it.")
         if getattr(self, "roiKeyEditor", None) is not None:
             self.roiKeyEditor.refresh(key)
@@ -1167,6 +1171,10 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicescroll.instance().acquire(MODULE_SHORTCUT_OWNER)
         except Exception:
             logging.exception("EasyFusion: could not set up slice browsing with the left mouse button")
+        try:
+            mippick.instance().acquire(MODULE_SHORTCUT_OWNER, self.onMipClickWhilePlacing)
+        except Exception:
+            logging.exception("EasyFusion: could not set up ROI placement on the MIP")
         self.onLayoutChanged()
         self.syncSlicerAnnotationsButton()
         if self.toolbar is not None:
@@ -1181,6 +1189,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def exit(self):
         slicescroll.instance().release(MODULE_SHORTCUT_OWNER)   # Slicer's own left drag outside the module
+        mippick.instance().release(MODULE_SHORTCUT_OWNER)
         if getattr(self, "ruler", None) is not None:
             self.ruler.cancel()   # an unfinished ruler line does not wait for clicks in another module
         if self.toolbar is not None:
@@ -1218,6 +1227,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             logging.exception("EasyFusion: could not remove the filter crop ROI")
         unregisterShortcuts(MODULE_SHORTCUT_OWNER)
         slicescroll.instance().release(MODULE_SHORTCUT_OWNER)
+        mippick.instance().release(MODULE_SHORTCUT_OWNER)
         _viewSync.clear()
         self.roiSet.release()
         if slicer.app.layoutManager() is not None:
@@ -2172,10 +2182,18 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         interactionNode.SetCurrentInteractionMode(interactionNode.Place)
 
     def onPlaceRoiAtCursor(self):
-        """ROI key (Insert by default): drop an ROI at the mouse position in the slice view under the cursor."""
+        """ROI key (Insert by default): drop an ROI at the mouse position in the slice view under the cursor
+        (over the MIP: at the hottest voxel along the line of sight)."""
         if self.inputVolumeSelector.currentNode() is None:
             slicer.util.showStatusMessage("EasyFusion: select a SPECT/PET volume first.", 3000)
             return
+        view = viewUnderCursor()
+        if view is not None and view[0] == "threeD":
+            widget = mippick.threeDWidgetByName(view[1])
+            if widget is not None and self.isEponaMipView(widget):
+                mippick.leavePlaceMode()   # a pending "Place ROI" does not drop a second ROI
+                self.placeRoiOnMip(widget)
+                return
         crosshairNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLCrosshairNode")
         ras = [0.0, 0.0, 0.0]
         xyz = [0.0, 0.0, 0.0]
@@ -2197,6 +2215,35 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             interactionNode.SwitchToViewTransformMode()
 
         node.AddControlPoint(ras)
+
+    @staticmethod
+    def isEponaMipView(threeDWidget):
+        viewNode = threeDWidget.mrmlViewNode() if threeDWidget is not None else None
+        mipViewNode = Easy_fusionLogic.mipViewNode()
+        return viewNode is not None and mipViewNode is not None and viewNode.GetID() == mipViewNode.GetID()
+
+    def placeRoiOnMip(self, threeDWidget, x=None, y=None):
+        """ROI at the hottest voxel of the SPECT/PET along the line of sight under the mouse; slices jump to it.
+        True when an ROI was placed."""
+        pet = self.inputVolumeSelector.currentNode()
+        position = mippick.brightestPointUnderMouse(threeDWidget, pet, x, y)
+        if position is None:
+            slicer.util.showStatusMessage("EasyFusion: no SPECT/PET voxel under the mouse on the MIP.", 3000)
+            return False
+        self.roiTable.clearSelection()   # the new ROI takes the radius box value
+        self.roiSet.addRoiAtWorld(position, pet)
+        mippick.jumpSlicesTo(position)
+        return True
+
+    def onMipClickWhilePlacing(self, threeDWidget, x, y):
+        """Place ROI + a click on the MIP: the ROI goes to the hottest voxel there (not to a rendering surface)."""
+        node = self.roiSet.roiNode
+        if (node is None or mippick.activePlaceNodeID() != node.GetID() or not self.isEponaMipView(threeDWidget)
+                or self.inputVolumeSelector.currentNode() is None):
+            return False
+        mippick.leavePlaceMode()
+        self.placeRoiOnMip(threeDWidget, x, y)
+        return True   # the click is used up even if nothing was under the mouse (no stray Slicer point)
 
     def onDeleteSelectedRoi(self):
         pointID = self.selectedRoiPointID()
