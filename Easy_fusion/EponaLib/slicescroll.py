@@ -10,7 +10,9 @@ Dragging up moves to the next slice (superior / anterior / left), dragging down 
 are kept together (same orientation, both time points) follow through the modules' view sync.
 
 One shared instance (kept on slicer.modules, so a module reload does not add a second set of observers);
-modules call acquire(owner) on enter and release(owner) on exit.
+modules call acquire(owner) on enter and release(owner) on exit. It does not rely on exit() alone: the observers
+are also removed whenever another module is selected (module selector signal), and a press is only taken while
+an owner module is the selected one, so other modules (Segment Editor, Markups, ...) always get Slicer's own mouse.
 """
 
 import logging
@@ -35,6 +37,13 @@ def leftDragScrollEnabled():
 def setLeftDragScrollEnabled(enabled):
     qt.QSettings().setValue(SETTINGS_LEFT_DRAG_SCROLL, "true" if enabled else "false")
     instance().update()
+
+
+def selectedModuleName():
+    try:
+        return str(slicer.util.selectedModule() or "")
+    except Exception:
+        return ""
 
 
 def slicesForDrag(pixels, pixelsPerSlice=PIXELS_PER_SLICE):
@@ -99,6 +108,11 @@ class LeftDragSliceScroll:
         self.installed = {}     # view name -> (interactor, [observer tags])
         self.drag = None        # {"name", "widget", "y", "rest"} while dragging
         self._layoutConnected = False
+        self._moduleSelectorConnected = False
+
+    def active(self):
+        """Only while one of the owner modules is shown and the setting is on."""
+        return bool(self.owners) and selectedModuleName() in self.owners and leftDragScrollEnabled()
 
     # --- switching on / off -------------------------------------------------------------------------------
 
@@ -111,12 +125,27 @@ class LeftDragSliceScroll:
         self.update()
 
     def update(self):
-        if self.owners and leftDragScrollEnabled():
+        self._connectModuleSelector()
+        if self.active():
             self.installAll()
             self._connectLayout(True)
         else:
             self._connectLayout(False)
             self.removeAll()
+
+    def _connectModuleSelector(self):
+        """Another module selected -> observers off, even if a module's exit() was not called."""
+        if self._moduleSelectorConnected:
+            return
+        try:
+            selector = slicer.util.mainWindow().moduleSelector()
+            selector.connect("moduleSelected(QString)", self._onModuleSelected)
+            self._moduleSelectorConnected = True
+        except Exception:
+            logging.debug("Epona: module selector signal (left drag scroll) failed", exc_info=True)
+
+    def _onModuleSelected(self, *args):
+        qt.QTimer.singleShot(0, self.update)   # after the selection has settled
 
     def _connectLayout(self, connect):
         layoutManager = slicer.app.layoutManager()
@@ -137,7 +166,8 @@ class LeftDragSliceScroll:
     # --- observers on the slice views -----------------------------------------------------------------------
 
     def installAll(self):
-        if not self.owners or not leftDragScrollEnabled():
+        if not self.active():
+            self.removeAll()
             return
         layoutManager = slicer.app.layoutManager()
         if layoutManager is None:
@@ -186,6 +216,8 @@ class LeftDragSliceScroll:
 
     def _onPress(self, name, interactor):
         self.drag = None
+        if not self.active():
+            return
         if interactor.GetShiftKey() or interactor.GetControlKey() or interactor.GetAltKey():
             return
         if placeModeActive() or markupUnderMouse():
@@ -235,6 +267,12 @@ def shutdown():
     if scroll is not None:
         scroll.owners.clear()
         scroll.update()
+        if scroll._moduleSelectorConnected:
+            try:
+                slicer.util.mainWindow().moduleSelector().disconnect("moduleSelected(QString)",
+                                                                     scroll._onModuleSelected)
+            except Exception:
+                pass
         try:
             delattr(slicer.modules, _INSTANCE_ATTRIBUTE)
         except Exception:
