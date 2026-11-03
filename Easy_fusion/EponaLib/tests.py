@@ -1445,8 +1445,9 @@ class LeftDragSliceScrollTest(unittest.TestCase):
         self.assertEqual(slicescroll.clampOffset(3.0, None, None), 3.0)
         self.assertEqual(slicescroll.clampOffset(3.0, 1.0, -1.0), 3.0)   # no volume: empty range
 
-    def _drag(self, interactor, moves, placing=False, onMarkup=False):
+    def _drag(self, interactor, moves, placing=False, onMarkup=False, selected="Easy_fusion"):
         scroll = slicescroll.LeftDragSliceScroll()
+        scroll.owners.add("Easy_fusion")
         scroll.installed["Red"] = (interactor, [1, 2, 3])
         scroll._abort = lambda name, caller, index: caller.aborted.append(index)
         steps = []
@@ -1454,7 +1455,9 @@ class LeftDragSliceScrollTest(unittest.TestCase):
         with mock.patch.object(slicescroll, "placeModeActive", return_value=placing), \
                 mock.patch.object(slicescroll, "markupUnderMouse", return_value=onMarkup), \
                 mock.patch.object(slicescroll, "scrollSlices", side_effect=lambda widget, n: steps.append(n)), \
-                mock.patch.object(slicescroll.slicer.app, "layoutManager", return_value=layoutManager):
+                mock.patch.object(slicescroll.slicer.app, "layoutManager", return_value=layoutManager), \
+                mock.patch.object(slicescroll, "selectedModuleName", return_value=selected), \
+                mock.patch.object(slicescroll, "leftDragScrollEnabled", return_value=True):
             scroll._onPress("Red", interactor)
             for y in moves:
                 interactor.y = y
@@ -1477,6 +1480,13 @@ class LeftDragSliceScrollTest(unittest.TestCase):
         interactor = _FakeInteractor()
         interactor.ctrl = 1
         self.assertEqual(self._drag(interactor, [20]), [])
+        self.assertEqual(interactor.aborted, [])
+
+    @unittest.skipUnless(_STAND_INS, "uses stand-ins for Qt / Slicer (inside Slicer it would change real settings)")
+    def test_other_module_keeps_slicer_mouse(self):
+        """Segment Editor (or any other module) shown: the left button is never taken, even if exit() was missed."""
+        interactor = _FakeInteractor()
+        self.assertEqual(self._drag(interactor, [20], selected="SegmentEditor"), [])
         self.assertEqual(interactor.aborted, [])
 
 
