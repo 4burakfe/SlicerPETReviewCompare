@@ -42,7 +42,10 @@ except ImportError:  # plain Python: stand-ins so the modules import; only scene
 
 import numpy as np
 
-from . import display, filters, layouts, measure, registration, roi, roiset, shortcuts, studyinfo, toolbar, values
+_STAND_INS = "mock" in globals()   # plain Python run: qt / slicer are stand-ins
+
+from . import (display, filters, layouts, measure, registration, roi, roiset, shortcuts, slicescroll, studyinfo,
+               toolbar, values)
 
 
 def _syntheticVolumes(seed=0):
@@ -1338,6 +1341,117 @@ class RulerToolTest(unittest.TestCase):
         self.ruler.start()
         self.ruler.deleteAll()
         self.assertEqual(self.scene.nodes, [])
+
+
+class RoiKeyTest(unittest.TestCase):
+    """The user-selectable ROI key: validation, and both modules' handlers following a change."""
+
+    def test_first_key_combination(self):
+        self.assertEqual(shortcuts.firstKeyCombination("Ctrl+R, I"), "Ctrl+R")
+        self.assertEqual(shortcuts.firstKeyCombination(" F2 "), "F2")
+        self.assertEqual(shortcuts.firstKeyCombination(","), ",")
+        self.assertEqual(shortcuts.firstKeyCombination(None), "")
+
+    def test_check_roi_key(self):
+        used = {"F5": "the Epona modules (window presets)", "Ctrl+S": "Slicer ('Save')"}
+        self.assertIsNone(shortcuts.checkRoiKey("F2", used))
+        self.assertIsNone(shortcuts.checkRoiKey("Ctrl+R", used))
+        self.assertIn("already used", shortcuts.checkRoiKey("F5", used))
+        self.assertIn("Save", shortcuts.checkRoiKey("Ctrl+S", used))
+        for key in ("Esc", "Up", "Del", "Space", "Ctrl+Shift"):
+            self.assertIsNotNone(shortcuts.checkRoiKey(key, used), key)
+        self.assertIsNotNone(shortcuts.checkRoiKey("", used))
+
+    @unittest.skipUnless(_STAND_INS, "uses stand-ins for Qt / Slicer (inside Slicer it would change real settings)")
+    def test_set_roi_key_moves_handlers(self):
+        registry, state = {}, {"key": "Insert", "handlers": {}, "listeners": {}}
+        seen = []
+        with mock.patch.object(shortcuts, "_registry", return_value=registry), \
+                mock.patch.object(shortcuts, "_roiState", return_value=state), \
+                mock.patch.object(shortcuts, "keyText", side_effect=lambda key: str(key)), \
+                mock.patch.object(shortcuts, "usedKeys", return_value={"F5": "window presets"}):
+            shortcuts.registerRoiShortcut("Easy_fusion", print, onKeyChanged=seen.append)
+            shortcuts.registerRoiShortcut("EponaCompare", repr, predicate=lambda: True)
+            self.assertEqual(set(registry["Insert"]["handlers"]), {"Easy_fusion", "EponaCompare"})
+            self.assertIn("already used", shortcuts.setRoiKey("F5"))
+            self.assertIn("Insert", registry)
+            self.assertIsNone(shortcuts.setRoiKey("F2"))
+            self.assertNotIn("Insert", registry)
+            self.assertEqual(set(registry["F2"]["handlers"]), {"Easy_fusion", "EponaCompare"})
+            self.assertEqual(shortcuts.roiKey(), "F2")
+            self.assertEqual(seen, ["F2"])
+            shortcuts.unregisterShortcuts("Easy_fusion")
+            self.assertEqual(set(registry["F2"]["handlers"]), {"EponaCompare"})
+            self.assertEqual(state["listeners"], {})
+
+
+class _FakeInteractor:
+    def __init__(self):
+        self.y = 0
+        self.shift = self.ctrl = self.alt = 0
+        self.aborted = []
+
+    def GetEventPosition(self):
+        return (10, self.y)
+
+    def GetShiftKey(self):
+        return self.shift
+
+    def GetControlKey(self):
+        return self.ctrl
+
+    def GetAltKey(self):
+        return self.alt
+
+
+class LeftDragSliceScrollTest(unittest.TestCase):
+    """Left drag up / down browses slices, unless placing, on a markup, or with a modifier key."""
+
+    def test_slices_for_drag(self):
+        self.assertEqual(slicescroll.slicesForDrag(9, 4), (2, 1))
+        self.assertEqual(slicescroll.slicesForDrag(-9, 4), (-2, -1))
+        self.assertEqual(slicescroll.slicesForDrag(3, 4), (0, 3))
+        self.assertEqual(slicescroll.slicesForDrag(5, 0), (0, 5))
+
+    def test_clamp_offset(self):
+        self.assertEqual(slicescroll.clampOffset(12.0, -10.0, 10.0), 10.0)
+        self.assertEqual(slicescroll.clampOffset(-12.0, -10.0, 10.0), -10.0)
+        self.assertEqual(slicescroll.clampOffset(3.0, None, None), 3.0)
+        self.assertEqual(slicescroll.clampOffset(3.0, 1.0, -1.0), 3.0)   # no volume: empty range
+
+    def _drag(self, interactor, moves, placing=False, onMarkup=False):
+        scroll = slicescroll.LeftDragSliceScroll()
+        scroll.installed["Red"] = (interactor, [1, 2, 3])
+        scroll._abort = lambda name, caller, index: caller.aborted.append(index)
+        steps = []
+        layoutManager = mock.MagicMock()
+        with mock.patch.object(slicescroll, "placeModeActive", return_value=placing), \
+                mock.patch.object(slicescroll, "markupUnderMouse", return_value=onMarkup), \
+                mock.patch.object(slicescroll, "scrollSlices", side_effect=lambda widget, n: steps.append(n)), \
+                mock.patch.object(slicescroll.slicer.app, "layoutManager", return_value=layoutManager):
+            scroll._onPress("Red", interactor)
+            for y in moves:
+                interactor.y = y
+                scroll._onMove("Red", interactor)
+            scroll._onRelease("Red", interactor)
+        return steps
+
+    @unittest.skipUnless(_STAND_INS, "uses stand-ins for Qt / Slicer (inside Slicer it would change real settings)")
+    def test_drag_scrolls(self):
+        interactor = _FakeInteractor()
+        self.assertEqual(self._drag(interactor, [3, 9, -3]), [2, -2])   # up 9 px = 2 slices (1 px left), down 12
+        self.assertEqual(interactor.aborted, [0, 1, 1, 1, 2])          # Slicer's window / level never starts
+
+    @unittest.skipUnless(_STAND_INS, "uses stand-ins for Qt / Slicer (inside Slicer it would change real settings)")
+    def test_left_to_slicer(self):
+        for kwargs in ({"placing": True}, {"onMarkup": True}):
+            interactor = _FakeInteractor()
+            self.assertEqual(self._drag(interactor, [20], **kwargs), [], kwargs)
+            self.assertEqual(interactor.aborted, [])
+        interactor = _FakeInteractor()
+        interactor.ctrl = 1
+        self.assertEqual(self._drag(interactor, [20]), [])
+        self.assertEqual(interactor.aborted, [])
 
 
 if __name__ == "__main__":

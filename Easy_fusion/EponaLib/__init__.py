@@ -14,6 +14,7 @@ Modules, lowest first (each imports only from the ones before it):
   filters   AI post-processing filters: model catalog and downloads, inference
   overlays  window info in the slice views, ROI segments and values on the MIP
   registration  time point 1 -> 2 translation (initial alignment + mutual information), transform handling
+  slicescroll  left mouse drag up / down browses slices in the slice views (while a module is shown)
   measure   distance ruler (line markups for looking only, never in the ROI tables)
   compareviews  reading views of the compare module: twins, MIPs, view contents, layouts, Monitor 2
   toolbar   the module toolbar (top of the window while a module is open): picture buttons, panel hiding
@@ -21,7 +22,7 @@ Modules, lowest first (each imports only from the ones before it):
 """
 
 SUBMODULES = ("scene", "shortcuts", "layouts", "values", "studyinfo", "display", "roi", "roiset", "filters",
-              "overlays", "registration", "measure", "compareviews", "toolbar", "tests")
+              "overlays", "registration", "slicescroll", "measure", "compareviews", "toolbar", "tests")
 
 
 def reloadAll():
@@ -34,6 +35,9 @@ def reloadAll():
     display = sys.modules.get(f"{__name__}.display")
     if display is not None:
         display.unbindWindowLevelSync()  # its observers belong to the old module; the next "Go" binds again
+    slicescroll = sys.modules.get(f"{__name__}.slicescroll")
+    if slicescroll is not None:
+        slicescroll.shutdown()  # same for the slice view mouse observers; the module's enter() installs them again
     for name in SUBMODULES:
         module = sys.modules.get(f"{__name__}.{name}")
         if module is not None:

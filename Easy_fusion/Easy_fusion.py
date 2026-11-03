@@ -33,7 +33,10 @@ from EponaLib.layouts import (  # noqa: F401
     isCompareView, PET_ONLY_SOURCE_ROLE, PET_ONLY_VOLUME_ATTRIBUTE, PET_ONLY_VOLUME_ID, secondaryScreen,
     showOnSecondScreen, SINGLE_SCREEN_FALLBACK_LAYOUT_ID, SLICE_VIEW_ROLES,
 )
-from EponaLib.shortcuts import registerShortcut, unregisterShortcuts  # noqa: F401
+from EponaLib.shortcuts import (  # noqa: F401
+    RoiKeyEditor, registerRoiShortcut, registerShortcut, roiKey, unregisterShortcuts,
+)
+from EponaLib import slicescroll  # noqa: E402
 from EponaLib.measure import RulerTool  # noqa: F401
 from EponaLib.toolbar import (  # noqa: F401
     CT_PRESET_ICONS, EponaToolBar, isToolbarEnabled, LAYOUT_ICONS, MRI_PRESET_ICONS, PERCENT_PRESET_ICONS,
@@ -175,8 +178,10 @@ class Easy_fusion(ScriptedLoadableModule):
         volume's units, its DICOM header or (for SUV) its values, and a unit is shown only when it is known.
         A volume known to be in SUV starts at SUV 0-10, any other at 0-100% of its maximum; over fusion, PET and
         3D views F5-F9 give the SUV presets for SUV volumes and 10-100% of the maximum otherwise.
-        Press Insert over a slice view to drop
+        Press Insert (or the key chosen under "ROI key") over a slice view to drop
         an ROI at the cursor; drag the yellow edge handles to resize it.
+        Hold the left mouse button and drag up / down in a slice view to browse slices (can be turned off under
+        Layouts; Slicer's window / level drag is used then).
         PET presets set a fixed SUV range; SPECT presets set 0 to a percentage of the maximum count in the image.
         Keyboard windowing with the mouse over a view: F5-F8 = abdomen, head, lungs, bones on CT views;
         F5-F9 = SUV 0-5, 0-7, 0-10, 0-15, 0-25 on fusion, PET and 3D views (0-10 ... 100% of max if not SUV).
@@ -768,6 +773,15 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.syncViewsCheckBox.connect("toggled(bool)", self.onSyncViewsToggled)
         layoutFormLayout.addRow(self.syncViewsCheckBox)
 
+        self.leftDragScrollCheckBox = qt.QCheckBox("Left mouse drag up / down browses slices")
+        self.leftDragScrollCheckBox.setToolTip(
+            "Hold the left mouse button in a slice view and drag up (next slice) or down (previous slice).\n"
+            "Not while placing ROIs / ruler lines or when the mouse is on an ROI point or handle.\n"
+            "Turn off to get Slicer's window / level drag back. Shared with Epona Compare.")
+        self.leftDragScrollCheckBox.checked = slicescroll.leftDragScrollEnabled()
+        self.leftDragScrollCheckBox.connect("toggled(bool)", slicescroll.setLeftDragScrollEnabled)
+        layoutFormLayout.addRow(self.leftDragScrollCheckBox)
+
         self.colorLegendCheckBox = qt.QCheckBox("Color legend in the fusion views")
         self.colorLegendCheckBox.setToolTip(
             "A color bar of the SPECT/PET color map with its window range, at the side of each fusion view.\n"
@@ -912,7 +926,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.measurementCollapsibleButton = measurementCollapsibleButton
         measurementLayout = qt.QFormLayout(measurementCollapsibleButton)
 
-        self.roitipLabel = qt.QLabel("Press 'Insert' key to place ROIs")
+        self.roitipLabel = qt.QLabel()
         self.roitipLabel.setStyleSheet("color: red; font-weight: bold;")
         measurementLayout.addRow(self.roitipLabel)
 
@@ -927,17 +941,17 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         measurementLayout.addRow("ROI radius:", self.roiRadiusSpinBox)
 
         roiButtonsLayout = qt.QHBoxLayout()
-        self.placeRoiButton = qt.QPushButton("Place ROI (Insert)")
-        self.placeRoiButton.setToolTip(
-            "Click once on a slice view to drop a spherical ROI centered there.\n"
-            "Shortcut: hover over a slice view and press Insert to drop an ROI at the mouse cursor.\n"
-            "Drag the center point to move the ROI; drag a yellow handle on its edge to resize it.")
+        self.placeRoiButton = qt.QPushButton()
         self.deleteRoiButton = qt.QPushButton("Delete Selected")
         self.clearRoisButton = qt.QPushButton("Clear All")
         roiButtonsLayout.addWidget(self.placeRoiButton)
         roiButtonsLayout.addWidget(self.deleteRoiButton)
         roiButtonsLayout.addWidget(self.clearRoisButton)
         measurementLayout.addRow(roiButtonsLayout)
+
+        self.roiKeyEditor = RoiKeyEditor()
+        measurementLayout.addRow("ROI key:", self.roiKeyEditor.widget)
+        self.onRoiKeyChanged(roiKey())
 
         thresholdLayout = qt.QHBoxLayout()
         self.thresholdModeComboBox = qt.QComboBox()
@@ -1041,8 +1055,19 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.roiUpdateTimer.setInterval(60)
         self.roiUpdateTimer.connect('timeout()', self.updateRois)
 
-        # Insert key: drop an ROI at the mouse cursor
-        self._addApplicationShortcut(qt.Qt.Key_Insert, self.onPlaceRoiAtCursor)
+        # ROI key (Insert unless the user picked another one): drop an ROI at the mouse cursor
+        registerRoiShortcut(MODULE_SHORTCUT_OWNER, self.onPlaceRoiAtCursor, onKeyChanged=self.onRoiKeyChanged)
+
+    def onRoiKeyChanged(self, key):
+        """Labels and tooltips name the current ROI key (also when it was changed in the compare module)."""
+        self.roitipLabel.text = f"Press '{key}' key to place ROIs"
+        self.placeRoiButton.text = f"Place ROI ({key})"
+        self.placeRoiButton.setToolTip(
+            "Click once on a slice view to drop a spherical ROI centered there.\n"
+            f"Shortcut: hover over a slice view and press {key} to drop an ROI at the mouse cursor.\n"
+            "Drag the center point to move the ROI; drag a yellow handle on its edge to resize it.")
+        if getattr(self, "roiKeyEditor", None) is not None:
+            self.roiKeyEditor.refresh(key)
 
     def setupFilterSection(self):
         filterCollapsibleButton = ctk.ctkCollapsibleButton()
@@ -1137,6 +1162,11 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def enter(self):
         self.observeThreeDViewNode()
+        try:
+            self.leftDragScrollCheckBox.checked = slicescroll.leftDragScrollEnabled()
+            slicescroll.instance().acquire(MODULE_SHORTCUT_OWNER)
+        except Exception:
+            logging.exception("EasyFusion: could not set up slice browsing with the left mouse button")
         self.onLayoutChanged()
         self.syncSlicerAnnotationsButton()
         if self.toolbar is not None:
@@ -1150,6 +1180,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.refreshFilterModels()  # models may have been added to the folder in the meantime
 
     def exit(self):
+        slicescroll.instance().release(MODULE_SHORTCUT_OWNER)   # Slicer's own left drag outside the module
         if getattr(self, "ruler", None) is not None:
             self.ruler.cancel()   # an unfinished ruler line does not wait for clicks in another module
         if self.toolbar is not None:
@@ -1186,6 +1217,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         except Exception:
             logging.exception("EasyFusion: could not remove the filter crop ROI")
         unregisterShortcuts(MODULE_SHORTCUT_OWNER)
+        slicescroll.instance().release(MODULE_SHORTCUT_OWNER)
         _viewSync.clear()
         self.roiSet.release()
         if slicer.app.layoutManager() is not None:
@@ -2140,7 +2172,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         interactionNode.SetCurrentInteractionMode(interactionNode.Place)
 
     def onPlaceRoiAtCursor(self):
-        """Insert key: drop an ROI centered at the mouse position in the slice view under the cursor."""
+        """ROI key (Insert by default): drop an ROI at the mouse position in the slice view under the cursor."""
         if self.inputVolumeSelector.currentNode() is None:
             slicer.util.showStatusMessage("EasyFusion: select a SPECT/PET volume first.", 3000)
             return
@@ -2151,7 +2183,8 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # GetCursorPositionXYZ returns the slice node only when the cursor is over a slice view
         sliceNode = crosshairNode.GetCursorPositionXYZ(xyz) if insideView else None
         if not insideView or sliceNode is None:
-            slicer.util.showStatusMessage("EasyFusion: hover the mouse over a slice view, then press Insert.", 3000)
+            slicer.util.showStatusMessage(
+                f"EasyFusion: hover the mouse over a slice view, then press {roiKey()}.", 3000)
             return
 
         node = self.prepareRoiNodeForPlacement()
