@@ -34,7 +34,7 @@ from EponaLib.layouts import (  # noqa: F401
     showOnSecondScreen, SINGLE_SCREEN_FALLBACK_LAYOUT_ID, SLICE_VIEW_ROLES,
 )
 from EponaLib.shortcuts import (  # noqa: F401
-    RoiKeyEditor, registerRoiShortcut, registerShortcut, roiKey, unregisterShortcuts,
+    RoiKeyEditor, registerRoiShortcut, registerShortcut, roiKeyLabel, unregisterShortcuts,
 )
 from EponaLib import slicescroll  # noqa: E402
 from EponaLib.measure import RulerTool  # noqa: F401
@@ -951,7 +951,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.roiKeyEditor = RoiKeyEditor()
         measurementLayout.addRow("ROI key:", self.roiKeyEditor.widget)
-        self.onRoiKeyChanged(roiKey())
+        self.onRoiKeyChanged(roiKeyLabel())
 
         thresholdLayout = qt.QHBoxLayout()
         self.thresholdModeComboBox = qt.QComboBox()
@@ -2184,7 +2184,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         sliceNode = crosshairNode.GetCursorPositionXYZ(xyz) if insideView else None
         if not insideView or sliceNode is None:
             slicer.util.showStatusMessage(
-                f"EasyFusion: hover the mouse over a slice view, then press {roiKey()}.", 3000)
+                f"EasyFusion: hover the mouse over a slice view, then press {roiKeyLabel()}.", 3000)
             return
 
         node = self.prepareRoiNodeForPlacement()
