@@ -41,6 +41,7 @@ from EponaLib.shortcuts import (  # noqa: E402
     RoiKeyEditor, registerRoiShortcut, registerShortcut, roiKeyLabel, unregisterShortcuts, viewUnderCursor,
 )
 from EponaLib import slicescroll  # noqa: E402
+from EponaLib import mippick  # noqa: E402
 from EponaLib.studyinfo import imagingTime, volumeLabel  # noqa: E402
 from EponaLib.toolbar import (  # noqa: E402
     CT_PRESET_ICONS, EponaToolBar, isToolbarEnabled, LAYOUT_ICONS, PERCENT_PRESET_ICONS, richToolTip,
@@ -135,7 +136,9 @@ class EponaCompare(ScriptedLoadableModule):
         orientation move together, windows can be linked, and each time point has its own spherical ROIs (own
         segmentation and table). Volume names show the imaging date / time in parentheses.
         Keys over the compare views: F5-F9 windowing, Insert = ROI at the cursor for that time point (another key
-        can be chosen under "ROI key"). Left mouse drag up / down in a slice view browses slices.
+        can be chosen under "ROI key"). Over a MIP (or with Place ROI and a click on a MIP) the ROI goes to the
+        hottest voxel along the line of sight and the slice views jump to it.
+        Left mouse drag up / down in a slice view browses slices.
         """
         parent.acknowledgementText = "This file was developed by Burak Demir."
         parent.icon = qt.QIcon(os.path.join(_MODULE_DIR, "Resources", "Icons", "EponaCompare.png"))
@@ -416,6 +419,7 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.toolbar = None
         unregisterShortcuts(MODULE_NAME)
         slicescroll.instance().release(MODULE_NAME)
+        mippick.instance().release(MODULE_NAME)
         for timer in ("roiUpdateTimer", "selectorRefreshTimer"):
             if hasattr(self, timer):
                 getattr(self, timer).stop()
@@ -441,6 +445,10 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicescroll.instance().acquire(MODULE_NAME)
         except Exception:
             logging.exception("EponaCompare: could not set up slice browsing with the left mouse button")
+        try:
+            mippick.instance().acquire(MODULE_NAME, self.onMipClickWhilePlacing)
+        except Exception:
+            logging.exception("EponaCompare: could not set up ROI placement on the MIP")
         self.refreshSelectors()
         self.restoreSelections()
         self.onLayoutChanged()
@@ -454,6 +462,7 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def exit(self):
         slicescroll.instance().release(MODULE_NAME)   # Slicer's own left drag outside the module
+        mippick.instance().release(MODULE_NAME)
         if getattr(self, "ruler", None) is not None:
             self.ruler.cancel()   # an unfinished ruler line does not wait for clicks in another module
         if self.toolbar is not None:
@@ -469,6 +478,8 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Labels and tooltips name the current ROI key (also when it was changed in Epona)."""
         self.roiTipLabel.text = f"Press '{key}' over a view of a time point to place an ROI there"
         self.placeRoiButton.setToolTip("Click once in a view to add an ROI to the time point whose tab is shown.\n"
+                                       "On a MIP, the ROI goes to the hottest voxel along the line of sight and "
+                                       "the slices jump to it.\n"
                                        f"Faster: hover a view of either time point and press {key}.")
         if getattr(self, "roiKeyEditor", None) is not None:
             self.roiKeyEditor.refresh(key)
@@ -1623,16 +1634,23 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         interactionNode.SetCurrentInteractionMode(interactionNode.Place)
 
     def onPlaceRoiAtCursor(self):
-        """ROI key (Insert by default) over a compare view: an ROI of that view's time point, at the mouse."""
+        """ROI key (Insert by default) over a compare view: an ROI of that view's time point, at the mouse
+        (over a MIP: at the hottest voxel along the line of sight)."""
         view = viewUnderCursor()
         timePoint = compareViewTimePoint(view[1]) if view is not None else None
-        if timePoint is None or view[0] != "slice":
+        if timePoint is None:
             slicer.util.showStatusMessage(
-                f"EponaCompare: hover the mouse over a slice view, then press {roiKeyLabel()}.", 3000)
+                f"EponaCompare: hover the mouse over a view of a time point, then press {roiKeyLabel()}.", 3000)
             return
         pet = self.pet(timePoint)
         if pet is None:
             slicer.util.showStatusMessage(f"EponaCompare: select the time point {timePoint} SPECT/PET first.", 3000)
+            return
+        if view[0] == "threeD":
+            mippick.leavePlaceMode()   # a pending "Place ROI" does not drop a second ROI
+            self.placeRoiOnMip(timePoint, mippick.threeDWidgetByName(view[1]))
+            return
+        if view[0] != "slice":
             return
         crosshairNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLCrosshairNode")
         ras = [0.0, 0.0, 0.0]
@@ -1644,6 +1662,33 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.roiTables[timePoint].clearSelection()
         self.roiTabs.setCurrentIndex(timePoint - 1)
         self.roiSets[timePoint].addRoiAtWorld(ras, pet)
+
+    def placeRoiOnMip(self, timePoint, threeDWidget, x=None, y=None):
+        """ROI of the time point at the hottest voxel of its SPECT/PET along the line of sight under the mouse in
+        its MIP; the slice views jump to it. True when an ROI was placed."""
+        pet = self.pet(timePoint)
+        position = mippick.brightestPointUnderMouse(threeDWidget, pet, x, y)
+        if position is None:
+            slicer.util.showStatusMessage("EponaCompare: no SPECT/PET voxel under the mouse on the MIP.", 3000)
+            return False
+        self.roiTables[timePoint].clearSelection()   # the new ROI takes the radius box value
+        self.roiTabs.setCurrentIndex(timePoint - 1)
+        self.roiSets[timePoint].addRoiAtWorld(position, pet)
+        mippick.jumpSlicesTo(position)
+        return True
+
+    def onMipClickWhilePlacing(self, threeDWidget, x, y):
+        """Place ROI + a click on a compare MIP: an ROI of that MIP's time point at the hottest voxel there."""
+        viewNode = threeDWidget.mrmlViewNode() if threeDWidget is not None else None
+        timePoint = compareViewTimePoint(viewNode.GetLayoutName()) if viewNode is not None else None
+        activeID = mippick.activePlaceNodeID()
+        ours = any(roiSet.roiNode is not None and roiSet.roiNode.GetID() == activeID
+                   for roiSet in self.roiSets.values())
+        if timePoint is None or not ours or self.pet(timePoint) is None:
+            return False
+        mippick.leavePlaceMode()
+        self.placeRoiOnMip(timePoint, threeDWidget, x, y)
+        return True   # the click is used up even if nothing was under the mouse (no stray Slicer point)
 
     def onDeleteSelectedRoi(self):
         timePoint = self.activeTimePoint()

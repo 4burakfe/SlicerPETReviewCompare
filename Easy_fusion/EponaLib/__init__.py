@@ -15,6 +15,7 @@ Modules, lowest first (each imports only from the ones before it):
   overlays  window info in the slice views, ROI segments and values on the MIP
   registration  time point 1 -> 2 translation (initial alignment + mutual information), transform handling
   slicescroll  left mouse drag up / down browses slices in the slice views (while a module is shown)
+  mippick   ROIs placed on the MIP go to the hottest voxel on the ray under the mouse; slice views follow
   measure   distance ruler (line markups for looking only, never in the ROI tables)
   compareviews  reading views of the compare module: twins, MIPs, view contents, layouts, Monitor 2
   toolbar   the module toolbar (top of the window while a module is open): picture buttons, panel hiding
@@ -22,7 +23,7 @@ Modules, lowest first (each imports only from the ones before it):
 """
 
 SUBMODULES = ("scene", "shortcuts", "layouts", "values", "studyinfo", "display", "roi", "roiset", "filters",
-              "overlays", "registration", "slicescroll", "measure", "compareviews", "toolbar", "tests")
+              "overlays", "registration", "slicescroll", "mippick", "measure", "compareviews", "toolbar", "tests")
 
 
 def reloadAll():
@@ -38,6 +39,9 @@ def reloadAll():
     slicescroll = sys.modules.get(f"{__name__}.slicescroll")
     if slicescroll is not None:
         slicescroll.shutdown()  # same for the slice view mouse observers; the module's enter() installs them again
+    mippick = sys.modules.get(f"{__name__}.mippick")
+    if mippick is not None:
+        mippick.shutdown()  # and for the 3D view click observers (MIP ROI placement)
     for name in SUBMODULES:
         module = sys.modules.get(f"{__name__}.{name}")
         if module is not None:
