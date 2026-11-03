@@ -87,7 +87,8 @@ ROIs and AI filters stay in the module panel.
 - **Window Info (bottom right)**: shows the current CT/MRI window / level and SPECT/PET range (in SUV for PET) in each slice view, following presets, shortcuts and mouse drags.
 
 #### SUV measurements (spherical ROIs)
-- Place an ROI with **Place ROI** or by pressing **Insert** over a slice view. Drag the center to move it and the yellow edge handles to resize it.
+- Place an ROI with **Place ROI** or by pressing **Insert** over a slice view (another key can be chosen in the **ROI key** field; the choice is remembered and shared with Compare). Drag the center to move it and the yellow edge handles to resize it.
+- Hold the left mouse button and drag up / down in a slice view to browse slices (turn off with **Left mouse drag up / down browses slices** under Layouts to get Slicer's window / level drag back).
 - Each ROI reports sphere **Max** and a thresholded segment giving segment **Mean**, **MTV** (mL) and **TLG**. The threshold is either % of the ROI's Max (default 40 %) or an absolute SUV (default 2.5), and each ROI keeps its own radius and threshold.
 - Select a row in the table to jump to that ROI and edit it; **Deselect** returns the controls to the defaults for new ROIs.
 - Choose which values are shown next to each ROI (Name, Max, Mean, MTV, TLG, Radius, Threshold).
@@ -178,7 +179,8 @@ Layouts (3 columns × 2 rows; **time point 1 top row (blue), time point 2 bottom
 | File | Contents |
 |---|---|
 | `scene.py` | scene loading / closing state, run code once the scene has settled |
-| `shortcuts.py` | F5–F9 / Insert shared by both modules (the module whose views are under the mouse takes the key) |
+| `shortcuts.py` | F5–F9 / ROI key (Insert by default, user-selectable) shared by both modules (the module whose views are under the mouse takes the key) |
+| `slicescroll.py` | Left mouse drag up / down browses slices while an Epona module is shown |
 | `layouts.py` | layout IDs and XML (Epona and compare), slice view roles, screens |
 | `values.py` | SUV / Bq/mL / counts detection, window presets and window math |
 | `studyinfo.py` | imaging date / time of a volume (DICOM, Data module tree, name) |

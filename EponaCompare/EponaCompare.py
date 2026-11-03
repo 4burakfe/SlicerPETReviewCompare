@@ -37,7 +37,10 @@ from EponaLib.roi import (  # noqa: E402
 )
 from EponaLib.roiset import SphereRoiSet  # noqa: E402
 from EponaLib.scene import runWhenSceneSettled, sceneIsBusy  # noqa: E402
-from EponaLib.shortcuts import registerShortcut, unregisterShortcuts, viewUnderCursor  # noqa: E402
+from EponaLib.shortcuts import (  # noqa: E402
+    RoiKeyEditor, registerRoiShortcut, registerShortcut, roiKey, unregisterShortcuts, viewUnderCursor,
+)
+from EponaLib import slicescroll  # noqa: E402
 from EponaLib.studyinfo import imagingTime, volumeLabel  # noqa: E402
 from EponaLib.toolbar import (  # noqa: E402
     CT_PRESET_ICONS, EponaToolBar, isToolbarEnabled, LAYOUT_ICONS, PERCENT_PRESET_ICONS, richToolTip,
@@ -131,7 +134,8 @@ class EponaCompare(ScriptedLoadableModule):
         the bottom row (fusion, CT/MRI, PET-only and MIP views, and a dual monitor layout). Slice views of the same
         orientation move together, windows can be linked, and each time point has its own spherical ROIs (own
         segmentation and table). Volume names show the imaging date / time in parentheses.
-        Keys over the compare views: F5-F9 windowing, Insert = ROI at the cursor for that time point.
+        Keys over the compare views: F5-F9 windowing, Insert = ROI at the cursor for that time point (another key
+        can be chosen under "ROI key"). Left mouse drag up / down in a slice view browses slices.
         """
         parent.acknowledgementText = "This file was developed by Burak Demir."
         parent.icon = qt.QIcon(os.path.join(_MODULE_DIR, "Resources", "Icons", "EponaCompare.png"))
@@ -389,7 +393,8 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for key in WINDOW_SHORTCUT_KEYS:
             registerShortcut(MODULE_NAME, getattr(qt.Qt, f"Key_{key}"), lambda key=key: self.onWindowShortcut(key),
                              predicate=self.cursorOverCompareView)
-        registerShortcut(MODULE_NAME, qt.Qt.Key_Insert, self.onPlaceRoiAtCursor, predicate=self.cursorOverCompareView)
+        registerRoiShortcut(MODULE_NAME, self.onPlaceRoiAtCursor, predicate=self.cursorOverCompareView,
+                            onKeyChanged=self.onRoiKeyChanged)
         self.restoreSelections()
         self.connectRoiSets()
         self.setupToolbar()
@@ -410,6 +415,7 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 logging.exception("EponaCompare: could not remove the toolbar")
             self.toolbar = None
         unregisterShortcuts(MODULE_NAME)
+        slicescroll.instance().release(MODULE_NAME)
         for timer in ("roiUpdateTimer", "selectorRefreshTimer"):
             if hasattr(self, timer):
                 getattr(self, timer).stop()
@@ -430,6 +436,11 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.removeObservers()
 
     def enter(self):
+        try:
+            self.leftDragScrollCheckBox.checked = slicescroll.leftDragScrollEnabled()
+            slicescroll.instance().acquire(MODULE_NAME)
+        except Exception:
+            logging.exception("EponaCompare: could not set up slice browsing with the left mouse button")
         self.refreshSelectors()
         self.restoreSelections()
         self.onLayoutChanged()
@@ -442,6 +453,7 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateToolbarButton()
 
     def exit(self):
+        slicescroll.instance().release(MODULE_NAME)   # Slicer's own left drag outside the module
         if getattr(self, "ruler", None) is not None:
             self.ruler.cancel()   # an unfinished ruler line does not wait for clicks in another module
         if self.toolbar is not None:
@@ -452,6 +464,14 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         import EponaLib
         EponaLib.reloadAll()
         ScriptedLoadableModuleWidget.onReload(self)
+
+    def onRoiKeyChanged(self, key):
+        """Labels and tooltips name the current ROI key (also when it was changed in Epona)."""
+        self.roiTipLabel.text = f"Press '{key}' over a view of a time point to place an ROI there"
+        self.placeRoiButton.setToolTip("Click once in a view to add an ROI to the time point whose tab is shown.\n"
+                                       f"Faster: hover a view of either time point and press {key}.")
+        if getattr(self, "roiKeyEditor", None) is not None:
+            self.roiKeyEditor.refresh(key)
 
     # --- Selections (kept in the parameter node, so they are saved with the scene) ------------------------
 
@@ -818,6 +838,13 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                             "range, in that time point's fusion views.\nIt follows the color map "
                                             "buttons, presets and window / level changes. Shared with Epona.")
         form.addRow(self.colorLegendCheckBox)
+        self.leftDragScrollCheckBox = qt.QCheckBox("Left mouse drag up / down browses slices")
+        self.leftDragScrollCheckBox.checked = slicescroll.leftDragScrollEnabled()
+        self.leftDragScrollCheckBox.setToolTip(
+            "Hold the left mouse button in a slice view and drag up (next slice) or down (previous slice).\n"
+            "Not while placing ROIs / ruler lines or when the mouse is on an ROI point or handle.\n"
+            "Turn off to get Slicer's window / level drag back. Shared with Epona.")
+        form.addRow(self.leftDragScrollCheckBox)
 
         self.windowInfoOverlay = SliceWindowInfoOverlay(self.readingVolumes, viewFilter=isCompareView,
                                                         headerCallback=self.viewHeader)
@@ -830,6 +857,7 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.rotationSpeedSlider.connect("valueChanged(double)", self.onRotationSpeedChanged)
         self.windowInfoCheckBox.connect("toggled(bool)", self.windowInfoOverlay.setEnabled)
         self.colorLegendCheckBox.connect("toggled(bool)", self.onColorLegendToggled)
+        self.leftDragScrollCheckBox.connect("toggled(bool)", slicescroll.setLeftDragScrollEnabled)
 
     # --- toolbar (top of the window while the module is open) -----------------------------------------------
 
@@ -1234,9 +1262,9 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.layout.addWidget(button)
         self.measurementCollapsibleButton = button
         form = qt.QFormLayout(button)
-        tip = qt.QLabel("Press 'Insert' over a view of a time point to place an ROI there")
-        tip.setStyleSheet("color: red; font-weight: bold;")
-        form.addRow(tip)
+        self.roiTipLabel = qt.QLabel()
+        self.roiTipLabel.setStyleSheet("color: red; font-weight: bold;")
+        form.addRow(self.roiTipLabel)
 
         self.roiRadiusSpinBox = qt.QDoubleSpinBox()
         self.roiRadiusSpinBox.setRange(1.0, 100.0)
@@ -1249,14 +1277,15 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         form.addRow("ROI radius:", self.roiRadiusSpinBox)
         buttons = qt.QHBoxLayout()
         self.placeRoiButton = qt.QPushButton("Place ROI")
-        self.placeRoiButton.setToolTip("Click once in a view to add an ROI to the time point whose tab is shown.\n"
-                                       "Faster: hover a view of either time point and press Insert.")
         self.deleteRoiButton = qt.QPushButton("Delete Selected")
         self.clearRoisButton = qt.QPushButton("Clear All")
         self.clearRoisButton.setToolTip("Remove all ROIs of the time point whose tab is shown.")
         for widget in (self.placeRoiButton, self.deleteRoiButton, self.clearRoisButton):
             buttons.addWidget(widget)
         form.addRow(buttons)
+        self.roiKeyEditor = RoiKeyEditor()
+        form.addRow("ROI key:", self.roiKeyEditor.widget)
+        self.onRoiKeyChanged(roiKey())
 
         thresholdLayout = qt.QHBoxLayout()
         self.thresholdModeComboBox = qt.QComboBox()
@@ -1594,11 +1623,12 @@ class EponaCompareWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         interactionNode.SetCurrentInteractionMode(interactionNode.Place)
 
     def onPlaceRoiAtCursor(self):
-        """Insert over a compare view: an ROI of that view's time point, centred at the mouse."""
+        """ROI key (Insert by default) over a compare view: an ROI of that view's time point, at the mouse."""
         view = viewUnderCursor()
         timePoint = compareViewTimePoint(view[1]) if view is not None else None
         if timePoint is None or view[0] != "slice":
-            slicer.util.showStatusMessage("EponaCompare: hover the mouse over a slice view, then press Insert.", 3000)
+            slicer.util.showStatusMessage(f"EponaCompare: hover the mouse over a slice view, then press {roiKey()}.",
+                                          3000)
             return
         pet = self.pet(timePoint)
         if pet is None:
