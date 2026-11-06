@@ -627,6 +627,8 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 selector = self.toolbarSelectors[key]
                 if selector.currentNode() is not panelSelector.currentNode():
                     selector.setCurrentNode(panelSelector.currentNode())
+        except (AttributeError, RuntimeError, KeyError):
+            return   # the toolbar was deleted under this instance (see updateSelectorLabels)
         finally:
             self._syncingToolbarSelectors = False
         self.updateToolbarPresetGroups()
@@ -1208,6 +1210,16 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             except Exception:
                 logging.exception("EasyFusion: could not remove the toolbar")
             self.toolbar = None
+        self.toolbarSelectors, self.toolbarSelectorLabels = {}, {}
+        # the panel selectors stay connected otherwise: every volume added later would call this (gone) instance
+        for selector in (getattr(self, "inputVolumeSelector", None), getattr(self, "inputVolumeSelectorCT", None)):
+            if selector is None:
+                continue
+            for slot in (self.onInputVolumeSelectionChanged, self.syncToolbarSelectors):
+                try:
+                    selector.disconnect("currentNodeChanged(vtkMRMLNode*)", slot)
+                except Exception:
+                    pass
         try:
             self.mipOverlay.clear()
         except Exception:
@@ -1732,8 +1744,12 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ctSelectorLabel.text = f"{ctText}:"
         labels = getattr(self, "toolbarSelectorLabels", {})
         if "pet" in labels:
-            labels["pet"].text = petText
-            labels["ct"].text = ctText
+            try:
+                labels["pet"].text = petText
+                labels["ct"].text = ctText
+            except (AttributeError, RuntimeError):
+                # the toolbar was deleted (cleanup, or a new instance of the module replaced it): forget its labels
+                self.toolbarSelectorLabels = {}
 
     def alignSliceViews(self, changedViews):
         """Fit views whose CT changed, then give same-orientation views the same position and zoom."""
