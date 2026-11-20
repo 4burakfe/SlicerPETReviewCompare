@@ -169,7 +169,8 @@ class Easy_fusion(ScriptedLoadableModule):
         parent.categories = ["Nuclear Medicine",""]
         parent.dependencies = []
         parent.contributors = ["Burak Demir, MD, FEBNM"]
-        iconUrl = qt.QUrl.fromLocalFile(os.path.join(os.path.dirname(__file__), "Resources", "Icons", "Easy_fusion.png")).toString()        
+        # the large Epona logo in the help text (the module icon is a small symbol)
+        iconUrl = qt.QUrl.fromLocalFile(os.path.join(os.path.dirname(__file__), "Resources", "Images", "logo.png")).toString()
         parent.helpText = f"""
         This module provides easy fusion of SPECT/PET and CT/MR images.
         Spherical ROIs report Max and Mean, plus a thresholded segment inside each ROI
