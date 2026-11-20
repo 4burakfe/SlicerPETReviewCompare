@@ -26,7 +26,8 @@ set(MODULE_PYTHON_SCRIPTS
 
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
-  Resources/Icons/fusbanner.jpg
+  Resources/Images/banner.jpg
+  Resources/Images/logo.png
   Resources/Icons/Toolbar/color_legend.png
   Resources/Icons/Toolbar/go.png
   Resources/Icons/Toolbar/layout_axial_four_up.png

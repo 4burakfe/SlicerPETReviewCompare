@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Branding/Epona_banner.jpg" alt="Epona: SPECT/PET Review" width="100%">
+</p>
+
 # SlicerPETReviewCompare Extension for 3D Slicer
 
 **Author**: Burak Demir, MD, FEBNM  
@@ -6,7 +10,6 @@
 
 ## Overview
 
-![Banner](Easy_fusion/Resources/Icons/fusbanner.jpg)
 
 SlicerPETReviewCompare is a 3D Slicer extension for reading SPECT/PET with CT/MRI. The tools are developed with research utility in mind and are **not intended for clinical use**.
 

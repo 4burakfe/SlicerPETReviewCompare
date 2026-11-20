@@ -483,7 +483,7 @@ class Easy_fusionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
 
-        bannerPath = os.path.join(os.path.dirname(__file__), "Resources", "Icons", "fusbanner.jpg")
+        bannerPath = os.path.join(os.path.dirname(__file__), "Resources", "Images", "banner.jpg")
         if os.path.exists(bannerPath):
             bannerLabel = qt.QLabel()
             bannerLabel.setPixmap(qt.QPixmap(bannerPath).scaledToWidth(600, qt.Qt.SmoothTransformation))
